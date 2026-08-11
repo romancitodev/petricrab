@@ -1,6 +1,42 @@
 #![allow(clippy::must_use_candidate)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Liveness levels for a transition, following Murata (1989).
+///
+/// The names describe the semantics, but each variant's documentation
+/// preserves the formal definition. The name alone is not enough to capture
+/// the distinction between L2 and L3, which is a change in quantifier
+///
+/// **(`∀k ∃sequence` vs. `∃sequence ∀k`)**, not a matter of degree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Liveness {
+  /// Level 0: The transition can never be fired in any firing sequence from the initial marking.
+  Dead,
+  /// Level 1: At least one transition can be fired at least once in some firing sequence from the initial marking.
+  PotentiallyFirable,
+  /// Level 2: for every natural number _k_, there exists a firing sequence in which the transition can be fired at least _k_ times.
+  ///
+  /// _(the sequence could be different for each k)_
+  ArbitrarilyRepeatable,
+  /// Level 3: Exists at least one firing sequence in which the transition can be fired infinitely often.
+  RepeatableForever,
+  /// Level 4: The transition is L1 for every Marking in the reachability graph.
+  Total,
+}
+
+impl Liveness {
+  fn as_lk(self) -> u8 {
+    self as u8
+  }
+}
+
+/// A report of the liveness level of a transition, including the level, the maximum number of times it can be fired (if applicable), and an example firing sequence.
+pub struct LivenessReport {
+  pub level: Liveness,
+  pub k: Option<usize>,
+  pub example: Vec<TransitionId>,
+}
 
 /// This [`PetriNet`] struct represents a Petri net with **infinite** capacity places and transitions.
 ///
@@ -38,6 +74,49 @@ impl PetriNet {
     id
   }
 
+  /// Get the IDs of all transitions that are enabled in the given marking
+  pub fn enabled_transitions(&self, marking: &Marking) -> Vec<TransitionId> {
+    self
+      .transitions
+      .iter()
+      .filter(|t| t.is_enabled(marking))
+      .map(|t| t.id)
+      .collect()
+  }
+
+  /// # Panics
+  ///
+  /// The function can panic if visited markings are too many and the stack overflows. This is a limitation of the current implementation, which uses a depth-first search approach. In practice, this should not be an issue for reasonably sized Petri nets.
+  pub fn reachable_markings(
+    &self,
+    initial_marking: &Marking,
+  ) -> BTreeMap<Marking, Vec<(TransitionId, Marking)>> {
+    let mut visited = BTreeMap::new();
+    let mut stack = vec![initial_marking.clone()];
+
+    while let Some(current_marking) = stack.pop() {
+      if visited.contains_key(&current_marking) {
+        continue;
+      }
+      visited.insert(current_marking.clone(), Vec::new());
+
+      let enabled_transitions = self.enabled_transitions(&current_marking);
+
+      for transition_id in enabled_transitions {
+        let transition = self.transition(transition_id);
+        let mut new_marking = current_marking.clone();
+        transition.fire(&mut new_marking);
+        visited
+          .get_mut(&current_marking)
+          .unwrap()
+          .push((transition_id, new_marking.clone()));
+        stack.push(new_marking);
+      }
+    }
+
+    visited
+  }
+
   /// # Panics
   ///
   /// It panics if the tokens vector length does not match the number of places in the Petri net.
@@ -60,7 +139,7 @@ impl PetriNet {
 pub struct Weight(usize);
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlaceId(usize);
-#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TransitionId(usize);
 
 /// A [`Place`] can be:
@@ -93,6 +172,7 @@ pub struct Transition {
   arcs: Arc,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Marking(Vec<usize>);
 
 #[expect(
@@ -261,9 +341,137 @@ impl Arc {
   }
 }
 
+/// Check if a marking can reach another marking in the reachability graph
+fn can_reach(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+  from: &Marking,
+  to: &Marking,
+) -> bool {
+  if from == to {
+    return true;
+  }
+
+  let mut visited = BTreeSet::new();
+  let mut stack = vec![from.clone()];
+
+  while let Some(current) = stack.pop() {
+    if !visited.insert(current.clone()) {
+      continue;
+    }
+    let Some(transitions) = graph.get(&current) else {
+      continue;
+    };
+    for (_, next_marking) in transitions {
+      if next_marking == to {
+        return true;
+      }
+      stack.push(next_marking.clone());
+    }
+  }
+
+  false
+}
+
+fn transitions_in_cycle(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+) -> BTreeSet<TransitionId> {
+  graph
+    .iter()
+    .flat_map(|(from, edges)| {
+      edges
+        .iter()
+        .filter(move |(_, to)| can_reach(graph, to, from))
+        .map(|(transition, _)| *transition)
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_can_reach_cycle() {
+    // p1 -t1-> p2 -t2-> p1: a 2-node cycle in the reachability graph.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    net.add_transition(t1_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p1, Weight(1));
+    net.add_transition(t2_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let m1 = Marking::new(vec![0, 1]);
+    let unreachable = Marking::new(vec![5, 5]);
+    let graph = net.reachable_markings(&m0);
+
+    assert!(can_reach(&graph, &m1, &m0), "m1 should reach m0 via t2");
+    assert!(
+      can_reach(&graph, &m0, &m0),
+      "self-loop back through the cycle"
+    );
+    assert!(
+      !can_reach(&graph, &m0, &unreachable),
+      "must terminate, not stack overflow, when the target is unreachable"
+    );
+  }
+
+  #[test]
+  fn test_transitions_in_cycle_detects_cycle() {
+    // p1 -t1-> p2 -t2-> p1: both transitions are on the cycle.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t1 = net.add_transition(t1_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p1, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let graph = net.reachable_markings(&m0);
+
+    let in_cycle = transitions_in_cycle(&graph);
+
+    assert_eq!(in_cycle, BTreeSet::from([t1, t2]));
+  }
+
+  #[test]
+  fn test_transitions_in_cycle_excludes_dead_end() {
+    // p1 -t1-> p2, no way back: t1 fires once and the graph dead-ends.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    net.add_transition(t1_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let graph = net.reachable_markings(&m0);
+
+    let in_cycle = transitions_in_cycle(&graph);
+
+    assert!(in_cycle.is_empty(), "a dead-end transition is not on a cycle");
+  }
 
   #[test]
   fn make_h2o() {
@@ -283,7 +491,7 @@ mod tests {
 
     println!("Initial marking: {marking:?}");
 
-    let transition = &net.transitions[reaction.0];
+    let transition = &net.transition(reaction);
     assert!(transition.is_enabled(&marking));
     assert!(transition.fire(&mut marking));
 
@@ -292,5 +500,55 @@ mod tests {
     assert_eq!(marking.tokens(h), 0);
     assert_eq!(marking.tokens(o), 1);
     assert_eq!(marking.tokens(h2o), 1);
+  }
+
+  #[test]
+  fn test_reachable_markings_cycle() {
+    // p1 <- t2 - p2 <-t1- p1: firing t1 then t2 returns to the initial marking,
+    // so the reachability graph is a 2-node cycle.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t1 = net.add_transition(t1_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p1, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let m1 = Marking::new(vec![0, 1]);
+
+    let graph = net.reachable_markings(&m0);
+
+    assert_eq!(graph.len(), 2, "should not loop forever on a cycle");
+    assert_eq!(graph.get(&m0).unwrap(), &vec![(t1, m1.clone())]);
+    assert_eq!(graph.get(&m1).unwrap(), &vec![(t2, m0.clone())]);
+  }
+
+  #[test]
+  fn test_transition_not_enabled() {
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+    let mut t1_arcs = Arc::default();
+
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(2)))
+      .add_output(p2, Weight(1));
+
+    let t1_id = net.add_transition(t1_arcs);
+
+    let mut marking = net.initial_marking(vec![1, 0]); // 1 token in p1, 0 in p2
+
+    let t1 = net.transition(t1_id);
+    assert!(!t1.is_enabled(&marking));
+    assert!(!t1.fire(&mut marking)); // Should not fire, marking remains unchanged
   }
 }
