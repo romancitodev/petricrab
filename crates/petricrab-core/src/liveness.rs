@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::marking::Marking;
-use crate::net::TransitionId;
+use crate::net::{PetriNet, TransitionId};
 
 /// Liveness levels for a transition, following Murata (1989).
 ///
@@ -84,10 +84,157 @@ fn transitions_in_cycle(
     .collect()
 }
 
+/// Whether `transition` can eventually fire starting from `from` i.e. `from`
+/// itself, or some marking reachable from it, has `transition` as an outgoing edge.
+fn fires_from(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+  from: &Marking,
+  transition: TransitionId,
+) -> bool {
+  let mut visited = BTreeSet::new();
+  let mut stack = vec![from.clone()];
+
+  while let Some(current) = stack.pop() {
+    if !visited.insert(current.clone()) {
+      continue;
+    }
+    let Some(edges) = graph.get(&current) else {
+      continue;
+    };
+    for (edge_transition, next_marking) in edges {
+      if *edge_transition == transition {
+        return true;
+      }
+      stack.push(next_marking.clone());
+    }
+  }
+
+  false
+}
+
+/// Classify the liveness of `transition` over the reachability graph rooted at
+/// `initial_marking`.
+pub fn liveness_of(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+  initial_marking: &Marking,
+  transition: TransitionId,
+) -> LivenessReport {
+  if !fires_from(graph, initial_marking, transition) {
+    return LivenessReport {
+      level: Liveness::Dead,
+      k: Some(0),
+      example: Vec::new(),
+    };
+  }
+
+  // Total (L4) implies RepeatableForever (L3) implies ArbitrarilyRepeatable (L2)
+  // implies PotentiallyFirable (L1), so check strongest-first. On our finite
+  // reachability graph L2 and L3 always coincide (Murata), so we never report
+  // ArbitrarilyRepeatable on its own — see the doc comment on `Liveness`.
+  let level = if graph
+    .keys()
+    .all(|marking| fires_from(graph, marking, transition))
+  {
+    Liveness::Total
+  } else if transitions_in_cycle(graph).contains(&transition) {
+    Liveness::RepeatableForever
+  } else {
+    Liveness::PotentiallyFirable
+  };
+
+  LivenessReport {
+    level,
+    k: None,
+    example: Vec::new(),
+  }
+}
+
+/// Every transition reachable from `from` — i.e. every `TransitionId` labeling
+/// an edge on some path starting at `from` (including `from`'s own outgoing edges).
+fn reachable_transitions_from(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+  from: &Marking,
+) -> BTreeSet<TransitionId> {
+  let mut found = BTreeSet::new();
+  let mut visited = BTreeSet::new();
+  let mut stack = vec![from.clone()];
+
+  while let Some(current) = stack.pop() {
+    if !visited.insert(current.clone()) {
+      continue;
+    }
+    let Some(edges) = graph.get(&current) else {
+      continue;
+    };
+    for (transition, next_marking) in edges {
+      found.insert(*transition);
+      stack.push(next_marking.clone());
+    }
+  }
+
+  found
+}
+
+/// Classify the liveness of every transition in `net`, over the reachability
+/// graph rooted at `initial_marking`.
+///
+/// Unlike calling [`liveness_of`] once per transition, this computes the
+/// reachability graph, the cycle-membership set, and each marking's reachable
+/// transitions exactly once, then classifies every transition off those
+/// precomputed sets in O(1) each.
+pub fn liveness_report(
+  net: &PetriNet,
+  initial_marking: &Marking,
+) -> BTreeMap<TransitionId, LivenessReport> {
+  let graph = net.reachable_markings(initial_marking);
+  let in_cycle = transitions_in_cycle(&graph);
+
+  let reachable_per_marking: BTreeMap<&Marking, BTreeSet<TransitionId>> = graph
+    .keys()
+    .map(|marking| (marking, reachable_transitions_from(&graph, marking)))
+    .collect();
+
+  let total: BTreeSet<TransitionId> = reachable_per_marking
+    .values()
+    .cloned()
+    .reduce(|acc, set| acc.intersection(&set).copied().collect())
+    .unwrap_or_default();
+
+  let fires_from_initial = reachable_per_marking
+    .get(initial_marking)
+    .cloned()
+    .unwrap_or_default();
+
+  net
+    .transition_ids()
+    .map(|transition| {
+      let level = if !fires_from_initial.contains(&transition) {
+        Liveness::Dead
+      } else if total.contains(&transition) {
+        Liveness::Total
+      } else if in_cycle.contains(&transition) {
+        Liveness::RepeatableForever
+      } else {
+        Liveness::PotentiallyFirable
+      };
+      let k = (level == Liveness::Dead).then_some(0);
+
+      (
+        transition,
+        LivenessReport {
+          level,
+          k,
+          example: Vec::new(),
+        },
+      )
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::net::{Arc, ArcKind, PetriNet, Weight};
+  use crate::net::{Arc, ArcKind, Weight};
 
   #[test]
   fn test_can_reach_cycle() {
@@ -169,6 +316,192 @@ mod tests {
 
     let in_cycle = transitions_in_cycle(&graph);
 
-    assert!(in_cycle.is_empty(), "a dead-end transition is not on a cycle");
+    assert!(
+      in_cycle.is_empty(),
+      "a dead-end transition is not on a cycle"
+    );
+  }
+
+  #[test]
+  fn test_liveness_of_dead() {
+    // p1 starts empty, so t1 is never enabled anywhere in the graph.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs.add_input(p1, ArcKind::Consume(Weight(1)));
+    let t1 = net.add_transition(t1_arcs);
+
+    let m0 = net.initial_marking(vec![0]);
+    let graph = net.reachable_markings(&m0);
+
+    let report = liveness_of(&graph, &m0, t1);
+
+    assert_eq!(report.level, Liveness::Dead);
+    assert_eq!(report.k, Some(0));
+  }
+
+  #[test]
+  fn test_liveness_of_potentially_firable_dead_end() {
+    // p1 -t1-> p2, no way back: fires once, but not from every marking (p2 has
+    // no outgoing edges), so it's L1 but neither cycling nor Total.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t1 = net.add_transition(t1_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let graph = net.reachable_markings(&m0);
+
+    let report = liveness_of(&graph, &m0, t1);
+
+    assert_eq!(report.level, Liveness::PotentiallyFirable);
+  }
+
+  #[test]
+  fn test_liveness_of_total_on_two_node_cycle() {
+    // p1 -t1-> p2 -t2-> p1: from either marking you can eventually fire either
+    // transition, so both are L4 (Total), the strongest level.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t1 = net.add_transition(t1_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p1, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0]);
+    let graph = net.reachable_markings(&m0);
+
+    assert_eq!(liveness_of(&graph, &m0, t1).level, Liveness::Total);
+    assert_eq!(liveness_of(&graph, &m0, t2).level, Liveness::Total);
+  }
+
+  #[test]
+  fn test_liveness_of_repeatable_forever_but_not_total() {
+    // p1 branches: t_dead runs into a dead end (p4), t_start feeds a p2<->p3
+    // cycle (t2/t3) that repeats forever. t2 is on the cycle reachable from
+    // the initial marking, but the dead-end branch can never fire it again,
+    // so t2 is RepeatableForever without being Total.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+    let p3 = net.add_place();
+    let p4 = net.add_place();
+
+    let mut t_dead_arcs = Arc::default();
+    t_dead_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p4, Weight(1));
+    net.add_transition(t_dead_arcs);
+
+    let mut t_start_arcs = Arc::default();
+    t_start_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    net.add_transition(t_start_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p3, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    let mut t3_arcs = Arc::default();
+    t3_arcs
+      .add_input(p3, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    net.add_transition(t3_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0, 0, 0]);
+    let graph = net.reachable_markings(&m0);
+
+    let report = liveness_of(&graph, &m0, t2);
+
+    assert_eq!(report.level, Liveness::RepeatableForever);
+  }
+
+  #[test]
+  fn test_liveness_report_dead() {
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs.add_input(p1, ArcKind::Consume(Weight(1)));
+    let t1 = net.add_transition(t1_arcs);
+
+    let m0 = net.initial_marking(vec![0]);
+    let report = liveness_report(&net, &m0);
+
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[&t1].level, Liveness::Dead);
+    assert_eq!(report[&t1].k, Some(0));
+  }
+
+  #[test]
+  fn test_liveness_report_matches_liveness_of_per_transition() {
+    // Same branching net as test_liveness_of_repeatable_forever_but_not_total:
+    // a dead-end branch (t_dead) and a branch that feeds a p2<->p3 cycle
+    // (t_start, t2, t3). Nothing here is Total, since the dead-end branch
+    // can't reach t_start/t2/t3 and the cycle branch can't reach t_dead.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+    let p3 = net.add_place();
+    let p4 = net.add_place();
+
+    let mut t_dead_arcs = Arc::default();
+    t_dead_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p4, Weight(1));
+    let t_dead = net.add_transition(t_dead_arcs);
+
+    let mut t_start_arcs = Arc::default();
+    t_start_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t_start = net.add_transition(t_start_arcs);
+
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_output(p3, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    let mut t3_arcs = Arc::default();
+    t3_arcs
+      .add_input(p3, ArcKind::Consume(Weight(1)))
+      .add_output(p2, Weight(1));
+    let t3 = net.add_transition(t3_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0, 0, 0]);
+    let graph = net.reachable_markings(&m0);
+    let report = liveness_report(&net, &m0);
+
+    assert_eq!(report.len(), 4);
+    for t in [t_dead, t_start, t2, t3] {
+      assert_eq!(
+        report[&t].level,
+        liveness_of(&graph, &m0, t).level,
+        "liveness_report disagrees with liveness_of for {t:?}"
+      );
+    }
+    assert_eq!(report[&t_dead].level, Liveness::PotentiallyFirable);
+    assert_eq!(report[&t_start].level, Liveness::PotentiallyFirable);
+    assert_eq!(report[&t2].level, Liveness::RepeatableForever);
+    assert_eq!(report[&t3].level, Liveness::RepeatableForever);
   }
 }

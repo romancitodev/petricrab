@@ -97,6 +97,11 @@ impl PetriNet {
   pub fn transition(&self, id: TransitionId) -> &Transition {
     &self.transitions[id.0]
   }
+
+  /// Iterate over the IDs of every transition in the net.
+  pub fn transition_ids(&self) -> impl Iterator<Item = TransitionId> + '_ {
+    (0..self.transitions.len()).map(TransitionId)
+  }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
