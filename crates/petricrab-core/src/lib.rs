@@ -1,5 +1,6 @@
 #![allow(clippy::must_use_candidate)]
 
+mod boundedness;
 mod coverability;
 mod liveness;
 mod marking;
