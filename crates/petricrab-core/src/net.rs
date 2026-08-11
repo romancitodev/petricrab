@@ -102,6 +102,11 @@ impl PetriNet {
   pub fn transition_ids(&self) -> impl Iterator<Item = TransitionId> + '_ {
     (0..self.transitions.len()).map(TransitionId)
   }
+
+  /// Iterate over the IDs of every place in the net.
+  pub fn place_ids(&self) -> impl Iterator<Item = PlaceId> + '_ {
+    (0..self.place_count).map(PlaceId)
+  }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -147,6 +152,10 @@ impl Transition {
       id: TransitionId(0),
       arcs: Arc::default(),
     }
+  }
+
+  pub(crate) fn arcs(&self) -> &Arc {
+    &self.arcs
   }
 
   pub fn from_arcs(arcs: Arc) -> Self {
