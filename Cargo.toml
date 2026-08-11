@@ -1,0 +1,10 @@
+[package]
+name = "petricrab"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["crates/*"]
+
+[dependencies]
+petricrab-core.path = "crates/petricrab-core/"

@@ -1,0 +1,6 @@
+edition = "2024"
+
+reorder_imports = true
+reorder_modules = true
+
+tab_spaces = 2
