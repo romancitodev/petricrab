@@ -6,6 +6,7 @@ mod liveness;
 mod marking;
 mod net;
 
+pub use boundedness::{Boundedness, boundedness_report};
 pub use liveness::{Liveness, LivenessReport, liveness_of, liveness_report};
 pub use marking::{Marking, MarkingFixed};
 pub use net::{
