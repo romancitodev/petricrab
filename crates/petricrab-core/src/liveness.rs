@@ -40,7 +40,7 @@ pub struct LivenessReport {
 }
 
 /// Check if a marking can reach another marking in the reachability graph
-fn can_reach(
+pub(crate) fn can_reach(
   graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
   from: &Marking,
   to: &Marking,
