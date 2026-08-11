@@ -275,22 +275,22 @@ mod tests {
     let mut arcs = Arc::default();
     arcs
       .add_input(h, ArcKind::Consume(Weight(2)))
-      .add_input(o, ArcKind::Consume(Weight(2)))
+      .add_input(o, ArcKind::Consume(Weight(1)))
       .add_output(h2o, Weight(1));
     let reaction = net.add_transition(arcs);
 
     let mut marking = net.initial_marking(vec![2, 2, 0]); // 2H, 2O, 0 H2O
 
-    dbg!("Initial marking: {:?}", &marking);
+    println!("Initial marking: {marking:?}");
 
     let transition = &net.transitions[reaction.0];
     assert!(transition.is_enabled(&marking));
     assert!(transition.fire(&mut marking));
 
-    dbg!("Marking after firing: {:?}", &marking);
+    println!("Marking after firing: {marking:?}");
 
     assert_eq!(marking.tokens(h), 0);
-    assert_eq!(marking.tokens(o), 0);
+    assert_eq!(marking.tokens(o), 1);
     assert_eq!(marking.tokens(h2o), 1);
   }
 }
