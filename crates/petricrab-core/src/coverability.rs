@@ -20,7 +20,7 @@ impl From<Marking> for ExtendedMarking {
       marking
         .0
         .into_iter()
-        .map(|t| ExtendedToken::Finite(t))
+        .map(ExtendedToken::Finite)
         .collect(),
     )
   }
@@ -420,7 +420,7 @@ mod tests {
     assert!(
       graph
         .keys()
-        .all(|m| !m.0.iter().any(|t| *t == ExtendedToken::Omega)),
+        .all(|m| !m.0.contains(&ExtendedToken::Omega)),
       "a bounded net must never produce Omega"
     );
   }
