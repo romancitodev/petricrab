@@ -1,10 +1,11 @@
 <div align="center">
 
-# `petricrab`
+# `🦀 petricrab`
 
 **Librería en Rust para modelar y simular [redes de Petri](https://es.wikipedia.org/wiki/Red_de_Petri)**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/romancitodev/petricrab/workflows/CI/badge.svg)](https://github.com/romancitodev/petricrab/actions?workflow=CI)
 
 </div>
 
