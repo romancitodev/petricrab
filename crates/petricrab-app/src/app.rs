@@ -129,30 +129,27 @@ impl eframe::App for PetriApp {
 
         if let Some(reachability) = &mut self.reachability {
             let mut open = true;
-            egui::Window::new("Reachability graph")
-                .frame(
-                    egui::Frame::default()
-                        .fill(visuals.panel_fill)
-                        .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
-                        .corner_radius(14.0)
-                        .shadow(visuals.window_shadow)
-                        .inner_margin(egui::Margin::symmetric(16, 14)),
-                )
-                .default_size([660.0, 520.0])
-                .min_size([380.0, 320.0])
-                .max_size([960.0, 780.0])
-                .resizable(true)
-                .collapsible(true)
-                // ponytail: egui_graphs' internal pan-compensation doubles the graph's on-screen
-                // shift whenever this window's top-left moves (its own bug, see graph_view.rs
-                // handle_node_drag/ViewState.last_top_left). Resizing from the corner doesn't
-                // move top-left, so keeping the window non-draggable sidesteps it without
-                // patching the vendored crate. Upgrade path: revisit if a fixed version ships.
-                .movable(false)
-                .open(&mut open)
-                .show(&ctx, |ui| {
-                    reachability.show(ui, &self.net);
-                });
+            editor::floating_window(
+                &ctx,
+                &visuals,
+                editor::WindowSpec {
+                    id: "reachability-graph",
+                    icon: "workflow",
+                    title: "Grafo de alcanzabilidad",
+                    default_size: egui::vec2(660.0, 520.0),
+                    min_size: egui::vec2(380.0, 320.0),
+                    max_size: Some(egui::vec2(960.0, 780.0)),
+                    // ponytail: egui_graphs' internal pan-compensation doubles the graph's
+                    // on-screen shift whenever this window's top-left moves (its own bug, see
+                    // graph_view.rs handle_node_drag/ViewState.last_top_left). Resizing from the
+                    // corner doesn't move top-left, so keeping the window non-draggable
+                    // sidesteps it without patching the vendored crate. Upgrade path: revisit if
+                    // a fixed version ships.
+                    movable: false,
+                },
+                &mut open,
+                |ui| reachability.show(ui, &self.net),
+            );
             if !open {
                 self.reachability = None;
             }
@@ -160,25 +157,25 @@ impl eframe::App for PetriApp {
 
         if let Some(properties) = &self.properties {
             let mut open = true;
-            egui::Window::new("Propiedades del net")
-                .frame(
-                    egui::Frame::default()
-                        .fill(visuals.panel_fill)
-                        .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
-                        .corner_radius(14.0)
-                        .shadow(visuals.window_shadow)
-                        .inner_margin(egui::Margin::symmetric(16, 14)),
-                )
-                .default_size([340.0, 480.0])
-                .min_size([260.0, 240.0])
-                .resizable(true)
-                .collapsible(true)
-                .open(&mut open)
-                .show(&ctx, |ui| {
+            editor::floating_window(
+                &ctx,
+                &visuals,
+                editor::WindowSpec {
+                    id: "net-properties",
+                    icon: "shield-check",
+                    title: "Propiedades del net",
+                    default_size: egui::vec2(340.0, 480.0),
+                    min_size: egui::vec2(260.0, 240.0),
+                    max_size: None,
+                    movable: true,
+                },
+                &mut open,
+                |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         properties.show(ui, &self.net);
                     });
-                });
+                },
+            );
             if !open {
                 self.properties = None;
             }

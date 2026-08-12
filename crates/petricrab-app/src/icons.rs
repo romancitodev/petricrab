@@ -17,7 +17,9 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// A Lucide icon glyph as `RichText`, ready to drop into a `Button`/`label`/atoms tuple.
+/// A Lucide icon glyph as `RichText`, ready to drop into a `Button`/`label`/atoms tuple —
+/// including a `Window` title, via `(icon(...), "text")`, since egui 0.35's `IntoAtoms` lets any
+/// widget builder take a tuple of atoms instead of a single string.
 /// Falls back to the icon's own name if it isn't found in the pack (e.g. a typo), so a
 /// missing icon degrades to readable text instead of a silent blank button.
 pub fn icon(name: &'static str, size: f32) -> egui::RichText {

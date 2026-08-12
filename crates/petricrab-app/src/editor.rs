@@ -767,6 +767,52 @@ pub(crate) fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) 
         .show(ui, add_contents);
 }
 
+/// Configuration for a floating analysis window — see [`floating_window`].
+pub(crate) struct WindowSpec {
+    pub id: &'static str,
+    pub icon: &'static str,
+    pub title: &'static str,
+    pub default_size: egui::Vec2,
+    pub min_size: egui::Vec2,
+    pub max_size: Option<egui::Vec2>,
+    /// `false` sidesteps egui_graphs' pan-compensation bug on the reachability window (see its
+    /// call site) — resizing from the corner still works, just not drag-by-header.
+    pub movable: bool,
+}
+
+/// Shared chrome for every floating analysis window (reachability graph, properties, future
+/// ones): an icon + title header instead of a bare label, no collapse-to-titlebar affordance
+/// (these are dedicated panels, not generic inspectors you tuck away), and one consistent
+/// frame/shadow/corner-radius instead of each window re-deriving its own.
+pub(crate) fn floating_window(
+    ctx: &egui::Context,
+    visuals: &egui::Visuals,
+    spec: WindowSpec,
+    open: &mut bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let mut window = egui::Window::new((icons::icon(spec.icon, 15.0), spec.title))
+        .id(egui::Id::new(spec.id))
+        .frame(
+            egui::Frame::default()
+                .fill(visuals.panel_fill)
+                .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
+                .corner_radius(14.0)
+                .shadow(visuals.window_shadow)
+                .inner_margin(egui::Margin::symmetric(16, 14)),
+        )
+        .default_size(spec.default_size)
+        .min_size(spec.min_size)
+        .resizable(true)
+        .collapsible(false)
+        .movable(spec.movable)
+        .open(open);
+    if let Some(max_size) = spec.max_size {
+        window = window.max_size(max_size);
+    }
+    window.show(ctx, add_contents);
+}
+
 fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let danger = egui::Color32::from_rgb(224, 82, 82);
     ui.add(
