@@ -1,0 +1,12 @@
+[package]
+name = "petricrab-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+petricrab-core = { path = "../petricrab-core" }
+slotmap = "1.1"
+eframe = "0.35"
+egui_graphs = "0.31"
+petgraph = "0.8"
+iconflow = { version = "1.0", features = ["pack-lucide"] }
