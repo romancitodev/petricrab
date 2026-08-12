@@ -5,14 +5,16 @@ mod icons;
 mod model;
 mod properties_panel;
 mod reachability_panel;
+mod theme;
 
 fn main() -> eframe::Result<()> {
-    eframe::run_native(
-        "petricrab",
-        eframe::NativeOptions::default(),
-        Box::new(|cc| {
-            icons::install(&cc.egui_ctx);
-            Ok(Box::new(app::PetriApp::new()))
-        }),
-    )
+  eframe::run_native(
+    "petricrab",
+    eframe::NativeOptions::default(),
+    Box::new(|cc| {
+      icons::install(&cc.egui_ctx);
+      theme::apply(&cc.egui_ctx);
+      Ok(Box::new(app::PetriApp::new()))
+    }),
+  )
 }
