@@ -775,8 +775,6 @@ pub(crate) struct WindowSpec {
     pub default_size: egui::Vec2,
     pub min_size: egui::Vec2,
     pub max_size: Option<egui::Vec2>,
-    /// `false` sidesteps egui_graphs' pan-compensation bug on the reachability window (see its
-    /// call site) — resizing from the corner still works, just not drag-by-header.
     pub movable: bool,
 }
 
@@ -784,13 +782,17 @@ pub(crate) struct WindowSpec {
 /// ones): an icon + title header instead of a bare label, no collapse-to-titlebar affordance
 /// (these are dedicated panels, not generic inspectors you tuck away), and one consistent
 /// frame/shadow/corner-radius instead of each window re-deriving its own.
+///
+/// Returns the window's on-screen rect this frame (`None` if it wasn't drawn, e.g. collapsed to
+/// nothing) — callers that embed something position-sensitive (egui_graphs' reachability graph)
+/// need this to detect the window moving; see `ReachabilityState::note_window_moved`.
 pub(crate) fn floating_window(
     ctx: &egui::Context,
     visuals: &egui::Visuals,
     spec: WindowSpec,
     open: &mut bool,
     add_contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> Option<egui::Rect> {
     let mut window = egui::Window::new((icons::icon(spec.icon, 15.0), spec.title))
         .id(egui::Id::new(spec.id))
         .frame(
@@ -810,7 +812,7 @@ pub(crate) fn floating_window(
     if let Some(max_size) = spec.max_size {
         window = window.max_size(max_size);
     }
-    window.show(ctx, add_contents);
+    window.show(ctx, add_contents).map(|inner| inner.response.rect)
 }
 
 fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {

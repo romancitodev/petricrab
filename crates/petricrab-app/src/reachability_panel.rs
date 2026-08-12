@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui_graphs::{DefaultGraphView, Graph, SettingsInteraction, SettingsNavigation};
+use egui_graphs::{DefaultGraphView, Graph, SettingsInteraction, SettingsNavigation, SettingsStyle};
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 
 use crate::analysis::{ExploreError, StateGraph, explore};
@@ -26,10 +26,15 @@ pub struct ReachabilityState {
     graph: Graph<(), ()>,
     node_indices: Vec<NodeIndex>,
     warning: Option<String>,
+    /// Screen top-left of the enclosing window, last frame — used only to notice it moved.
+    last_top_left: Option<egui::Pos2>,
+    /// Set for one frame after the window moves, forcing a re-fit instead of trusting
+    /// egui_graphs' own pan bookkeeping (see `note_window_moved`).
+    refit_pending: bool,
 }
 
 impl ReachabilityState {
-    pub fn explore(net: &PetriNet) -> Self {
+    pub fn explore(net: &PetriNet, visuals: &egui::Visuals) -> Self {
         // Boundedness is checked (Karp-Miller, always terminates) before any BFS enumeration —
         // an unbounded net gets a precise "these places grow forever" instead of a truncation
         // warning after silently hitting an arbitrary state-count cap.
@@ -61,7 +66,16 @@ impl ReachabilityState {
             .iter()
             .enumerate()
             .map(|(i, marking)| {
-                graph.add_node_with_label((), format!("{i}: {}", marking_text(net, marking)))
+                let idx =
+                    graph.add_node_with_label((), format!("{i}: {}", marking_text(net, marking)));
+                // Default node fill is egui_graphs' own `widgets.inactive.fg_stroke.color` — a
+                // dim gray meant for subtle button icons, not a filled shape on a busy canvas.
+                // Use the app's own accent instead, so this graph reads as part of the same app
+                // instead of a generic library demo dropped in unstyled.
+                if let Some(node) = graph.node_mut(idx) {
+                    node.set_color(visuals.selection.bg_fill);
+                }
+                idx
             })
             .collect();
         for edge in &state_graph.edges {
@@ -78,7 +92,19 @@ impl ReachabilityState {
             graph,
             node_indices,
             warning,
+            last_top_left: None,
+            refit_pending: true,
         }
+    }
+
+    /// Called once per frame with the enclosing window's current screen top-left. If it moved
+    /// since last frame, requests a re-fit on the *next* `show()` — see the comment in `show()`
+    /// on why we don't trust egui_graphs' own pan bookkeeping across a window move.
+    pub fn note_window_moved(&mut self, top_left: egui::Pos2) {
+        if self.last_top_left.is_some_and(|p| p != top_left) {
+            self.refit_pending = true;
+        }
+        self.last_top_left = Some(top_left);
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, net: &PetriNet) {
@@ -117,9 +143,33 @@ impl ReachabilityState {
             let interactions = SettingsInteraction::new()
                 .with_dragging_enabled(true)
                 .with_node_selection_enabled(true);
-            // ponytail: fit_to_screen_enabled(true) (the default) re-fits every single frame,
-            // fighting any manual pan/zoom the moment you try it. Fit once on open instead.
-            let navigation = SettingsNavigation::new().with_fit_to_screen_enabled(false);
+            // egui_graphs 0.31 double-counts its own pan compensation when the *container's*
+            // screen position changes between frames (confirmed by reading graph_view.rs: it
+            // both nudges `pan` by the top-left delta AND re-adds the new top-left at draw
+            // time). Rather than patch around that internally, we detect the move ourselves
+            // (`note_window_moved`, called from app.rs with the enclosing Window's rect) and
+            // force exactly one real re-fit the frame after it happens — using the library's own
+            // correct "fit to bounds" path instead of trusting its incremental pan math across a
+            // move. `refit_pending` is consumed (reset to false) right after being read, so a
+            // continuous drag re-fits every frame (looks like the graph rides along with the
+            // window) and a stationary graph goes back to free pan/zoom immediately after.
+            let force_fit = std::mem::take(&mut self.refit_pending);
+            let navigation = SettingsNavigation::new().with_fit_to_screen_enabled(force_fit);
+
+            let style = SettingsStyle::new()
+                .with_node_stroke_hook(|selected, dragged, _color, _stroke, style| {
+                    let base = style.visuals.text_color();
+                    egui::Stroke::new(
+                        if selected || dragged { 2.4 } else { 1.6 },
+                        if selected || dragged { style.visuals.strong_text_color() } else { base },
+                    )
+                })
+                .with_edge_stroke_hook(|selected, _order, _stroke, style| {
+                    egui::Stroke::new(
+                        if selected { 2.2 } else { 1.4 },
+                        style.visuals.text_color(),
+                    )
+                });
 
             egui::Frame::default()
                 .fill(ui.visuals().extreme_bg_color)
@@ -134,7 +184,8 @@ impl ReachabilityState {
                     ui.allocate_ui(graph_area, |ui| {
                         let mut view = DefaultGraphView::new(&mut self.graph)
                             .with_interactions(&interactions)
-                            .with_navigations(&navigation);
+                            .with_navigations(&navigation)
+                            .with_styles(&style);
                         ui.add(&mut view);
                     });
                 });

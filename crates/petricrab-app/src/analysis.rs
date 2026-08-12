@@ -110,6 +110,14 @@ pub fn unbounded_places(net: &ModelNet, marking: &ModelMarking) -> Vec<ModelPlac
         .collect()
 }
 
+/// Liveness of one transition, plus a witness: the shortest firing sequence from `M0` that
+/// actually fires it (empty for `Dead`, since there is none).
+pub struct TransitionLiveness {
+    pub transition: ModelTransitionId,
+    pub level: petricrab_core::Liveness,
+    pub example: Vec<ModelTransitionId>,
+}
+
 /// Boundedness/liveness/reversibility for the whole net, over its finite `R(M0)`. `Err` if the
 /// net is unbounded — none of these three properties can be computed on an infinite state space
 /// with the primitives this app has today (boundedness is the one exception, which is exactly
@@ -117,9 +125,12 @@ pub fn unbounded_places(net: &ModelNet, marking: &ModelMarking) -> Vec<ModelPlac
 pub struct NetProperties {
     pub boundedness: Vec<(ModelPlaceId, petricrab_core::Boundedness)>,
     pub safe: bool,
-    pub liveness: Vec<(ModelTransitionId, petricrab_core::Liveness)>,
+    pub liveness: Vec<TransitionLiveness>,
     pub reversible: bool,
-    pub home_state_count: usize,
+    /// The actual home state markings (see `petricrab_core::home_states`), not just a count —
+    /// every one of these is a marking you can always get back to from anywhere in `R(M0)`. If
+    /// `reversible` is true, `initial_marking` itself is always one of them.
+    pub home_states: Vec<ModelMarking>,
 }
 
 pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> Result<NetProperties, Vec<ModelPlaceId>> {
@@ -139,21 +150,53 @@ pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> Result<NetProperties, 
         .collect();
     let safe = boundedness.iter().all(|(_, b)| b.is_safe());
 
+    // Need this direction too: liveness_report's `example` comes back keyed by
+    // petricrab_core::TransitionId, and the GUI wants to show it as the editable model's own
+    // transitions (so it can look up labels).
+    let reverse_transitions: HashMap<petricrab_core::TransitionId, ModelTransitionId> = analysis
+        .transition_map
+        .iter()
+        .map(|(&model_t, &analysis_t)| (analysis_t, model_t))
+        .collect();
+
     let liveness: Vec<_> = analysis
         .transition_map
         .iter()
-        .map(|(&model_t, analysis_t)| (model_t, liveness_report[analysis_t].level))
+        .map(|(&model_t, analysis_t)| {
+            let report = &liveness_report[analysis_t];
+            let example = report
+                .example
+                .iter()
+                .filter_map(|t| reverse_transitions.get(t).copied())
+                .collect();
+            TransitionLiveness { transition: model_t, level: report.level, example }
+        })
         .collect();
 
     let reversible = petricrab_core::is_reversible(&analysis.net, &analysis.initial);
-    let home_state_count = petricrab_core::home_states(&analysis.net, &analysis.initial).len();
+
+    let reverse_places: HashMap<petricrab_core::PlaceId, ModelPlaceId> = analysis
+        .place_map
+        .iter()
+        .map(|(&model_p, &analysis_p)| (analysis_p, model_p))
+        .collect();
+    let home_states = petricrab_core::home_states(&analysis.net, &analysis.initial)
+        .into_iter()
+        .map(|home| {
+            analysis
+                .net
+                .place_ids()
+                .filter_map(|p| reverse_places.get(&p).map(|&mp| (mp, home.tokens(p) as u32)))
+                .collect::<ModelMarking>()
+        })
+        .collect();
 
     Ok(NetProperties {
         boundedness,
         safe,
         liveness,
         reversible,
-        home_state_count,
+        home_states,
     })
 }
 

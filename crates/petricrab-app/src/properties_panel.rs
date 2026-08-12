@@ -4,6 +4,7 @@ use crate::analysis::{self, NetProperties};
 use crate::editor::{card, section_label};
 use crate::icons;
 use crate::model::PetriNet;
+use crate::reachability_panel::marking_text;
 
 pub enum PropertiesState {
     Computed(NetProperties),
@@ -77,12 +78,28 @@ impl PropertiesState {
             if props.liveness.is_empty() {
                 ui.weak("(sin transiciones)");
             }
-            for &(t, level) in &props.liveness {
+            for t in &props.liveness {
                 ui.horizontal(|ui| {
-                    let (icon_name, color) = liveness_icon(level);
+                    let (icon_name, color) = liveness_icon(t.level);
                     ui.label(icons::icon(icon_name, 13.0).color(color));
-                    ui.label(format!("{} — {}", net.transition_label(t), liveness_label(level)));
+                    ui.label(format!(
+                        "{} — {}",
+                        net.transition_label(t.transition),
+                        liveness_label(t.level)
+                    ));
                 });
+                if !t.example.is_empty() {
+                    let path = t
+                        .example
+                        .iter()
+                        .map(|&e| net.transition_label(e))
+                        .collect::<Vec<_>>()
+                        .join(" → ");
+                    ui.horizontal(|ui| {
+                        ui.add_space(19.0); // align under the label, past the icon
+                        ui.weak(format!("ruta: {path}"));
+                    });
+                }
             }
         });
         ui.add_space(10.0);
@@ -98,14 +115,19 @@ impl PropertiesState {
                 };
                 ui.label(icons::icon(icon_name, 13.0).color(color));
                 ui.label(if props.reversible {
-                    "Reversible: siempre se puede volver al marking inicial".to_string()
+                    "Reversible: siempre se puede volver al marking inicial"
                 } else {
-                    format!(
-                        "No reversible, pero tiene {} home state(s): siempre se puede volver a alguno de ellos",
-                        props.home_state_count
-                    )
+                    "No reversible — pero siempre se puede volver a alguno de estos home states"
                 });
             });
+            ui.add_space(8.0);
+            ui.weak(format!("Home states ({})", props.home_states.len()));
+            if props.home_states.is_empty() {
+                ui.weak("(ninguno)");
+            }
+            for home in &props.home_states {
+                ui.label(format!("• {}", marking_text(net, home)));
+            }
         });
     }
 }

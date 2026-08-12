@@ -107,7 +107,7 @@ impl eframe::App for PetriApp {
                     .add_sized([ui.available_width(), 32.0], explore_button)
                     .clicked()
                 {
-                    self.reachability = Some(ReachabilityState::explore(&self.net));
+                    self.reachability = Some(ReachabilityState::explore(&self.net, &visuals));
                 }
 
                 ui.add_space(6.0);
@@ -129,7 +129,7 @@ impl eframe::App for PetriApp {
 
         if let Some(reachability) = &mut self.reachability {
             let mut open = true;
-            editor::floating_window(
+            let rect = editor::floating_window(
                 &ctx,
                 &visuals,
                 editor::WindowSpec {
@@ -139,17 +139,17 @@ impl eframe::App for PetriApp {
                     default_size: egui::vec2(660.0, 520.0),
                     min_size: egui::vec2(380.0, 320.0),
                     max_size: Some(egui::vec2(960.0, 780.0)),
-                    // ponytail: egui_graphs' internal pan-compensation doubles the graph's
-                    // on-screen shift whenever this window's top-left moves (its own bug, see
-                    // graph_view.rs handle_node_drag/ViewState.last_top_left). Resizing from the
-                    // corner doesn't move top-left, so keeping the window non-draggable
-                    // sidesteps it without patching the vendored crate. Upgrade path: revisit if
-                    // a fixed version ships.
-                    movable: false,
+                    movable: true,
                 },
                 &mut open,
                 |ui| reachability.show(ui, &self.net),
             );
+            // See ReachabilityState::note_window_moved: this is how the graph notices the
+            // window moved and re-fits, instead of trusting egui_graphs' own (buggy) pan
+            // compensation across the move.
+            if let Some(rect) = rect {
+                reachability.note_window_moved(rect.left_top());
+            }
             if !open {
                 self.reachability = None;
             }
