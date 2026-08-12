@@ -13,22 +13,26 @@
 
 | Crate | Descripción |
 | --- | --- |
-| [`petricrab-core`](crates/petricrab-core) | Modelo de red de Petri: lugares, transiciones y arcos con peso, soportando arcos de consumo, peek (lectura sin consumir) e inhibición. Incluye lógica de habilitación y disparo de transiciones. |
+| [`petricrab-core`](crates/petricrab-core) | Modelo de red de Petri: lugares, transiciones y arcos con peso, soportando arcos de consumo, peek (lectura sin consumir) e inhibición. Habilitación/disparo de transiciones, grafo de alcanzabilidad y grafo de cobertura de Karp-Miller (termina incluso en redes no acotadas). Análisis: acotamiento/safety, liveness (niveles L0–L4 de Murata) y reversibilidad/home states. |
+| [`petricrab-app`](crates/petricrab-app) | Editor visual de escritorio con [egui](https://github.com/emilk/egui)/eframe: canvas con pan/zoom, simulador paso a paso, grafo de alcanzabilidad interactivo y panel de propiedades (acotamiento, liveness, reversibilidad) corriendo sobre `petricrab-core`. |
 
 ## Estructura
 
 | Ruta | Descripción |
 | --- | --- |
 | `src/` | Binario principal |
-| `crates/petricrab-core/` | Núcleo: modelo y lógica de redes de Petri |
+| `crates/petricrab-core/` | Núcleo: modelo, simulación y análisis de redes de Petri |
+| `crates/petricrab-app/` | Editor visual (eframe/egui) |
 
 ## Roadmap
 
 | Feature | Estado |
 | --- | --- |
-| Simulación completa de una red de Petri | 🚧 En progreso |
+| Simulación completa de una red de Petri | ✅ Completo |
+| Análisis: acotamiento, liveness, reversibilidad/home states | ✅ Completo |
+| `petricrab-app` — editor visual con [egui](https://github.com/emilk/egui) | 🚧 En progreso (pulido de UI) |
+| Arcos peek/inhibit con peso configurable en `petricrab-core` | 📋 Planeado |
 | Funciones helper de optimización | 📋 Planeado |
-| `petricrab-gui` — editor visual con [egui](https://github.com/emilk/egui) (alcance por definir) | 📋 Planeado |
 
 ## Referencias
 
