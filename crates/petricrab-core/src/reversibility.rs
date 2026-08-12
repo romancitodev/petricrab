@@ -81,7 +81,7 @@ mod tests {
   #[test]
   fn test_h2o_is_not_reversible_but_has_a_home_state() {
     // Same reaction as net.rs's make_h2o: 2H + 1O -> H2O, no way back. R(M0) is just
-    // {[2,2,0], [0,1,1]}, and the dead end [0,1,1] can't reach M0 — not reversible.
+    // {[2,2,0], [0,1,1]}, and the dead end [0,1,1] can't reach M0. not reversible.
     // But [0,1,1] IS a home state: every marking (including itself) can reach it, since the
     // net has nowhere else to go. This is exactly the "relax reversibility to a home state"
     // example from the text: you can't always get back to M0, but you can always get back

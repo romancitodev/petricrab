@@ -111,6 +111,12 @@ impl PetriNet {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Weight(pub(crate) usize);
+
+impl Weight {
+  pub fn new(weight: usize) -> Self {
+    Self(weight)
+  }
+}
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlaceId(pub(crate) usize);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
