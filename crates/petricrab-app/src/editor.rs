@@ -1083,7 +1083,12 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
   ui.set_min_width(190.0);
   match target {
     ContextTarget::Node(NodeId::Place(p)) if app.net.place_ids().any(|id| id == p) => {
-      ui.label(egui::RichText::new(app.net.place_label(p)).strong());
+      ui.add(
+        egui::TextEdit::singleline(app.net.place_label_mut(p).unwrap())
+          .font(egui::TextStyle::Body)
+          .frame(egui::Frame::NONE)
+          .desired_width(160.0),
+      );
       ui.separator();
       if menu_item(ui, "plus", "Agregar token").clicked() {
         let tokens = app.net.tokens(p);
@@ -1119,7 +1124,12 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
       }
     }
     ContextTarget::Node(NodeId::Transition(t)) if app.net.transition_ids().any(|id| id == t) => {
-      ui.label(egui::RichText::new(app.net.transition_label(t)).strong());
+      ui.add(
+        egui::TextEdit::singleline(app.net.transition_label_mut(t).unwrap())
+          .font(egui::TextStyle::Body)
+          .frame(egui::Frame::NONE)
+          .desired_width(160.0),
+      );
       ui.separator();
       let marking = app.net.marking();
       let enabled = fire::enabled_transitions(&app.net, &marking).contains(&t);
@@ -1245,8 +1255,111 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
   }
 }
 
-/// Top menu bar: identity mark on the left, then File/Edit/View menus. File's open/save
-/// actions are stubbed for now (no file format decided yet).
+const FILE_EXTENSION: &str = "gpn";
+const MAX_RECENT: usize = 8;
+
+/// Moves `path` to the front of `app.recent`, deduplicating and capping its length. Persisted
+/// to disk by eframe's own storage (`PetriApp::save`), on its regular save cycle and on exit.
+fn remember_recent(app: &mut PetriApp, path: std::path::PathBuf) {
+  app.recent.retain(|p| p != &path);
+  app.recent.insert(0, path);
+  app.recent.truncate(MAX_RECENT);
+}
+
+/// Resets `app` to a blank, never-saved project (positions, view, undo history — everything
+/// except the recent-files list).
+fn file_new(app: &mut PetriApp) {
+  let recent = std::mem::take(&mut app.recent);
+  *app = PetriApp::new();
+  app.recent = recent;
+}
+
+fn file_display_name(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
+  path
+    .file_name()
+    .map(|n| n.to_string_lossy())
+    .unwrap_or_else(|| path.to_string_lossy())
+}
+
+fn open_path(app: &mut PetriApp, path: std::path::PathBuf) {
+  match crate::project::load(&path) {
+    Ok(loaded) => {
+      let recent = std::mem::take(&mut app.recent);
+      *app = PetriApp::new();
+      app.recent = recent;
+      app.net = loaded.net;
+      app.positions = loaded.positions;
+      app.rotation = loaded.rotation;
+      app.next_place_n = loaded.next_place_n;
+      app.next_transition_n = loaded.next_transition_n;
+      app.notify(
+        egui_toast::ToastKind::Success,
+        format!("Abierto: {}", file_display_name(&path)),
+      );
+      remember_recent(app, path.clone());
+      app.file_path = Some(path);
+    }
+    Err(e) => app.notify(
+      egui_toast::ToastKind::Error,
+      format!("No se pudo abrir el proyecto: {e}"),
+    ),
+  }
+}
+
+fn file_open(app: &mut PetriApp) {
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("gpn", &[FILE_EXTENSION])
+    .pick_file()
+  else {
+    return;
+  };
+  open_path(app, path);
+}
+
+fn file_save_as(app: &mut PetriApp) {
+  let Some(path) = rfd::FileDialog::new()
+    .add_filter("gpn", &[FILE_EXTENSION])
+    .set_file_name(format!("net.{FILE_EXTENSION}"))
+    .save_file()
+  else {
+    return;
+  };
+  match crate::project::save(app, &path) {
+    Ok(()) => {
+      app.notify(
+        egui_toast::ToastKind::Success,
+        format!("Guardado: {}", file_display_name(&path)),
+      );
+      remember_recent(app, path.clone());
+      app.file_path = Some(path);
+    }
+    Err(e) => app.notify(
+      egui_toast::ToastKind::Error,
+      format!("No se pudo guardar el proyecto: {e}"),
+    ),
+  }
+}
+
+fn file_save(app: &mut PetriApp) {
+  match app.file_path.clone() {
+    Some(path) => match crate::project::save(app, &path) {
+      Ok(()) => {
+        app.notify(
+          egui_toast::ToastKind::Success,
+          format!("Guardado: {}", file_display_name(&path)),
+        );
+        remember_recent(app, path);
+      }
+      Err(e) => app.notify(
+        egui_toast::ToastKind::Error,
+        format!("No se pudo guardar el proyecto: {e}"),
+      ),
+    },
+    None => file_save_as(app),
+  }
+}
+
+/// Top menu bar: identity mark on the left, then File/Edit/View menus.
 pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
   egui::MenuBar::new().ui(ui, |ui| {
     ui.horizontal(|ui| {
@@ -1261,17 +1374,45 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.menu_button("Archivo", |ui| {
       ui.set_min_width(170.0);
       if menu_item(ui, "file-plus", "Nuevo").clicked() {
+        file_new(app);
         ui.close();
       }
       if menu_item(ui, "folder-open", "Abrir…").clicked() {
+        file_open(app);
         ui.close();
       }
       if menu_item(ui, "save", "Guardar").clicked() {
+        file_save(app);
         ui.close();
       }
       if menu_item(ui, "save", "Guardar como…").clicked() {
+        file_save_as(app);
         ui.close();
       }
+      ui.separator();
+      ui.add_enabled_ui(!app.recent.is_empty(), |ui| {
+        ui.menu_button("Recientes", |ui| {
+          ui.set_min_width(220.0);
+          if app.recent.is_empty() {
+            ui.weak("(ninguno)");
+          } else {
+            for path in app.recent.clone() {
+              let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+              if ui
+                .add(egui::Button::new(name).frame(false))
+                .on_hover_text(path.to_string_lossy())
+                .clicked()
+              {
+                open_path(app, path);
+                ui.close();
+              }
+            }
+          }
+        });
+      });
       ui.separator();
       if menu_item(ui, "log-out", "Salir").clicked() {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1386,8 +1527,8 @@ fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 }
 
 /// Inspector header: a round icon badge (not a boxed card, just an avatar) next to the
-/// entity's name/kind, e.g. a place's filled-circle glyph beside "p1" / "Place".
-fn entity_title(ui: &mut egui::Ui, icon_name: &'static str, name: &str, kind: &str) {
+/// entity's editable name and its kind, e.g. a place's filled-circle glyph beside "p1" / "Place".
+fn entity_title(ui: &mut egui::Ui, icon_name: &'static str, name: &mut String, kind: &str) {
   ui.horizontal(|ui| {
     egui::Frame::default()
       .fill(ui.visuals().faint_bg_color)
@@ -1398,7 +1539,12 @@ fn entity_title(ui: &mut egui::Ui, icon_name: &'static str, name: &str, kind: &s
       });
     ui.add_space(4.0);
     ui.vertical(|ui| {
-      ui.label(egui::RichText::new(name).strong().size(15.0));
+      ui.add(
+        egui::TextEdit::singleline(name)
+          .font(egui::FontId::proportional(15.0))
+          .frame(egui::Frame::NONE)
+          .desired_width(140.0),
+      );
       ui.weak(kind);
     });
   });
@@ -1554,7 +1700,7 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
       let node = *nodes.iter().next().unwrap();
       match node {
         NodeId::Place(p) if app.net.place_ids().any(|id| id == p) => {
-          entity_title(ui, "circle", app.net.place_label(p), "Place");
+          entity_title(ui, "circle", app.net.place_label_mut(p).unwrap(), "Place");
           ui.add_space(12.0);
           ui.separator();
           ui.add_space(10.0);
@@ -1571,7 +1717,7 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
           entity_title(
             ui,
             "rectangle-vertical",
-            app.net.transition_label(t),
+            app.net.transition_label_mut(t).unwrap(),
             "Transition",
           );
           ui.add_space(12.0);
@@ -1605,27 +1751,45 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
       let mut sorted: Vec<NodeId> = nodes.iter().copied().collect();
       sorted.sort();
       for node in sorted {
-        let (icon_name, name): (&'static str, String) = match node {
-          NodeId::Place(p) if app.net.place_ids().any(|id| id == p) => {
-            ("circle", app.net.place_label(p).to_string())
-          }
-          NodeId::Transition(t) if app.net.transition_ids().any(|id| id == t) => (
+        let (icon_name, exists): (&'static str, bool) = match node {
+          NodeId::Place(p) => ("circle", app.net.place_ids().any(|id| id == p)),
+          NodeId::Transition(t) => (
             "rectangle-vertical",
-            app.net.transition_label(t).to_string(),
+            app.net.transition_ids().any(|id| id == t),
           ),
-          // Deleted mid-selection: just skip it, the entry drops out on the next click.
-          _ => continue,
         };
+        // Deleted mid-selection: just skip it, the entry drops out on the next click.
+        if !exists {
+          continue;
+        }
         card(ui, |ui| {
           let focused = app.selection_focus == Some(node);
-          let header = ui.add(
-            egui::Button::new((icons::icon(icon_name, 13.0), name))
-              .frame(false)
-              .selected(focused),
-          );
-          if header.clicked() {
-            app.selection_focus = if focused { None } else { Some(node) };
-          }
+          ui.horizontal(|ui| {
+            let toggle = ui.add(
+              egui::Button::new(icons::icon(icon_name, 13.0))
+                .frame(false)
+                .selected(focused),
+            );
+            if toggle.clicked() {
+              app.selection_focus = if focused { None } else { Some(node) };
+            }
+            match node {
+              NodeId::Place(p) => {
+                ui.add(
+                  egui::TextEdit::singleline(app.net.place_label_mut(p).unwrap())
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY),
+                );
+              }
+              NodeId::Transition(t) => {
+                ui.add(
+                  egui::TextEdit::singleline(app.net.transition_label_mut(t).unwrap())
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY),
+                );
+              }
+            }
+          });
           if focused {
             ui.add_space(8.0);
             match node {

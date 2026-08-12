@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 petricrab-core = { path = "../petricrab-core" }
 slotmap = "1.1"
-eframe = "0.35"
 egui_graphs = "0.31"
 petgraph = "0.8"
 iconflow = { version = "1.0", features = ["pack-lucide"] }
+rkyv = "0.8.18"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+eframe = { version = "0.35", features = ["persistence"] }
+egui-toast = "=0.21.0"

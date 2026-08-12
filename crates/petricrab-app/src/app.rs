@@ -47,6 +47,11 @@ pub enum EditMode {
 
 pub struct PetriApp {
   pub net: PetriNet,
+  /// Where this net was last saved to/loaded from; `None` for a never-saved "Nuevo" project.
+  pub file_path: Option<std::path::PathBuf>,
+  /// Most-recently opened/saved paths, newest first. Persisted via eframe's storage (see
+  /// `PersistedState`/`App::save` below), not part of the document itself.
+  pub recent: Vec<std::path::PathBuf>,
   pub positions: HashMap<NodeId, egui::Pos2>,
   pub mode: EditMode,
   pub connect_from: Option<NodeId>,
@@ -77,12 +82,17 @@ pub struct PetriApp {
   /// Undo/redo stacks of markings visited while stepping through the simulation.
   pub sim_history: Vec<Marking>,
   pub sim_future: Vec<Marking>,
+  /// Toasts queued via [`PetriApp::notify`], drained into an `egui_toast::Toasts` and shown
+  /// once per frame in `ui()`.
+  pub toast_queue: Vec<egui_toast::Toast>,
 }
 
 impl PetriApp {
   pub fn new() -> Self {
     Self {
       net: PetriNet::new(),
+      file_path: None,
+      recent: Vec::new(),
       positions: HashMap::new(),
       mode: EditMode::Select,
       connect_from: None,
@@ -104,11 +114,44 @@ impl PetriApp {
       sim_initial: None,
       sim_history: Vec::new(),
       sim_future: Vec::new(),
+      toast_queue: Vec::new(),
     }
+  }
+
+  /// Queues a toast notification, shown for a few seconds on the next frame.
+  pub fn notify(&mut self, kind: egui_toast::ToastKind, text: impl Into<String>) {
+    self.toast_queue.push(
+      egui_toast::Toast::new()
+        .kind(kind)
+        .text(text.into())
+        .options(
+          egui_toast::ToastOptions::default()
+            .duration_in_seconds(4.0)
+            .show_progress(true)
+            .show_icon(true),
+        ),
+    );
   }
 }
 
+/// The only slice of `PetriApp` that survives a restart — the document itself (net, positions,
+/// view) is not persisted, just the recent-files list.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub struct PersistedState {
+  pub recent: Vec<std::path::PathBuf>,
+}
+
 impl eframe::App for PetriApp {
+  fn save(&mut self, storage: &mut dyn eframe::Storage) {
+    eframe::set_value(
+      storage,
+      eframe::APP_KEY,
+      &PersistedState {
+        recent: self.recent.clone(),
+      },
+    );
+  }
+
   fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
     let ctx = ui.ctx().clone();
     let visuals = ui.visuals().clone();
@@ -239,6 +282,14 @@ impl eframe::App for PetriApp {
             editor::toolbar(self, ui);
           });
       });
+
+    let mut toasts = egui_toast::Toasts::new()
+      .anchor(egui::Align2::RIGHT_BOTTOM, egui::pos2(-12.0, -12.0))
+      .direction(egui::Direction::BottomUp);
+    for toast in self.toast_queue.drain(..) {
+      toasts.add(toast);
+    }
+    toasts.show(ui);
 
     if self.simulate_open {
       egui::Area::new(egui::Id::new("simulate-popup"))

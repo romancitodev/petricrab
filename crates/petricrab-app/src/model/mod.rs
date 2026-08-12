@@ -180,6 +180,17 @@ impl PetriNet {
       .map_or("<removed>", |transition| transition.label.as_str())
   }
 
+  pub fn place_label_mut(&mut self, id: PlaceId) -> Option<&mut String> {
+    self.places.get_mut(id).map(|place| &mut place.label)
+  }
+
+  pub fn transition_label_mut(&mut self, id: TransitionId) -> Option<&mut String> {
+    self
+      .transitions
+      .get_mut(id)
+      .map(|transition| &mut transition.label)
+  }
+
   pub fn place_ids(&self) -> impl Iterator<Item = PlaceId> + '_ {
     self.places.keys()
   }
