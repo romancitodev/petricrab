@@ -16,13 +16,7 @@ pub(crate) struct ExtendedMarking(Vec<ExtendedToken>);
 
 impl From<Marking> for ExtendedMarking {
   fn from(marking: Marking) -> Self {
-    Self(
-      marking
-        .0
-        .into_iter()
-        .map(ExtendedToken::Finite)
-        .collect(),
-    )
+    Self(marking.0.into_iter().map(ExtendedToken::Finite).collect())
   }
 }
 
@@ -418,9 +412,7 @@ mod tests {
 
     assert_eq!(graph.len(), 2, "bounded cycle: only 2 reachable markings");
     assert!(
-      graph
-        .keys()
-        .all(|m| !m.0.contains(&ExtendedToken::Omega)),
+      graph.keys().all(|m| !m.0.contains(&ExtendedToken::Omega)),
       "a bounded net must never produce Omega"
     );
   }

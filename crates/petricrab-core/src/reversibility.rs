@@ -6,10 +6,11 @@ use crate::net::{PetriNet, TransitionId};
 
 /// `candidate` is a home state of `graph` if every marking in it can reach `candidate`
 /// i.e. no matter how far you wander from the initial marking, you can always get back to
-/// `candidate`.
-fn is_home_state(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
-  candidate: &Marking,
+/// `candidate`. Generic over the marking type, same as `liveness`'s traversal helpers, so it
+/// runs over either the exact reachability graph or the coverability graph.
+fn is_home_state<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  candidate: &M,
 ) -> bool {
   graph.keys().all(|m| can_reach(graph, m, candidate))
 }
@@ -20,10 +21,23 @@ fn is_home_state(
 /// # Panics
 ///
 /// Same caveat as [`crate::net::PetriNet::reachable_markings`]: this never returns if the net
-/// is unbounded, since `R(M0)` itself is infinite.
+/// is unbounded, since `R(M0)` itself is infinite. Use [`is_reversible_covering`] instead when
+/// that's a possibility.
 pub fn is_reversible(net: &PetriNet, initial_marking: &Marking) -> bool {
   let graph = net.reachable_markings(initial_marking);
   is_home_state(&graph, initial_marking)
+}
+
+/// Whether `initial_marking` is a home state, computed over the (always-finite) Karp-Miller
+/// coverability graph instead of the exact reachability set (see
+/// `liveness::liveness_report_covering` for the same technique and its caveats). This one stays
+/// exact, not just "good enough": the coverability graph's root is always the literal, concrete
+/// `initial_marking` (only its descendants can widen to Ω), so the question stays precise
+/// regardless of what's unbounded elsewhere in the net.
+pub fn is_reversible_covering(net: &PetriNet, initial_marking: &Marking) -> bool {
+  let graph = crate::coverability::coverability_graph(net, initial_marking);
+  let initial: crate::coverability::ExtendedMarking = initial_marking.into();
+  is_home_state(&graph, &initial)
 }
 
 /// Every home state reachable from `initial_marking`: markings that every other marking in

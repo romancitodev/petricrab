@@ -101,7 +101,10 @@ mod tests {
 
     assert_eq!(report[&p1], Boundedness::Bounded(1));
     assert_eq!(report[&p2], Boundedness::Bounded(1));
-    assert!(report.values().all(Boundedness::is_safe), "whole net is safe");
+    assert!(
+      report.values().all(Boundedness::is_safe),
+      "whole net is safe"
+    );
   }
 
   #[test]

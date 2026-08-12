@@ -39,11 +39,15 @@ pub struct LivenessReport {
   pub example: Vec<TransitionId>,
 }
 
-/// Check if a marking can reach another marking in the reachability graph
-pub(crate) fn can_reach(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
-  from: &Marking,
-  to: &Marking,
+/// Check if a marking can reach another marking in the reachability graph.
+///
+/// Generic over the marking type so the same traversal runs over either the plain reachability
+/// graph (`Marking`) or the Karp-Miller coverability graph (`crate::coverability::ExtendedMarking`,
+/// see `liveness_report_covering`).
+pub(crate) fn can_reach<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  from: &M,
+  to: &M,
 ) -> bool {
   if from == to {
     return true;
@@ -70,8 +74,8 @@ pub(crate) fn can_reach(
   false
 }
 
-fn transitions_in_cycle(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+fn transitions_in_cycle<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
 ) -> BTreeSet<TransitionId> {
   graph
     .iter()
@@ -86,9 +90,9 @@ fn transitions_in_cycle(
 
 /// Whether `transition` can eventually fire starting from `from` i.e. `from`
 /// itself, or some marking reachable from it, has `transition` as an outgoing edge.
-fn fires_from(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
-  from: &Marking,
+fn fires_from<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  from: &M,
   transition: TransitionId,
 ) -> bool {
   let mut visited = BTreeSet::new();
@@ -116,14 +120,14 @@ fn fires_from(
 /// `target` never fires from `from` (i.e. it's dead there). Breadth-first with parent pointers
 /// keyed by marking, so it's the minimum-length witness rather than whatever path a DFS
 /// happens to find first.
-fn firing_path_to(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
-  from: &Marking,
+fn firing_path_to<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  from: &M,
   target: TransitionId,
 ) -> Option<Vec<TransitionId>> {
   let mut visited = BTreeSet::from([from.clone()]);
   let mut queue = VecDeque::from([from.clone()]);
-  let mut came_from: BTreeMap<Marking, (TransitionId, Marking)> = BTreeMap::new();
+  let mut came_from: BTreeMap<M, (TransitionId, M)> = BTreeMap::new();
 
   while let Some(current) = queue.pop_front() {
     let Some(edges) = graph.get(&current) else {
@@ -192,9 +196,9 @@ pub fn liveness_of(
 
 /// Every transition reachable from `from` — i.e. every `TransitionId` labeling
 /// an edge on some path starting at `from` (including `from`'s own outgoing edges).
-fn reachable_transitions_from(
-  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
-  from: &Marking,
+fn reachable_transitions_from<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  from: &M,
 ) -> BTreeSet<TransitionId> {
   let mut found = BTreeSet::new();
   let mut visited = BTreeSet::new();
@@ -216,23 +220,19 @@ fn reachable_transitions_from(
   found
 }
 
-/// Classify the liveness of every transition in `net`, over the reachability
-/// graph rooted at `initial_marking`.
-///
-/// Unlike calling [`liveness_of`] once per transition, this computes the
-/// reachability graph, the cycle-membership set, and each marking's reachable
-/// transitions exactly once, then classifies every transition off those
-/// precomputed sets in O(1) each.
-pub fn liveness_report(
-  net: &PetriNet,
-  initial_marking: &Marking,
+/// Classify every transition in `transitions` over an already-built graph rooted at `initial`.
+/// Shared core behind both [`liveness_report`] (exact reachability graph) and
+/// [`liveness_report_covering`] (coverability graph instead).
+fn classify_liveness<M: Ord + Clone>(
+  graph: &BTreeMap<M, Vec<(TransitionId, M)>>,
+  initial: &M,
+  transitions: impl Iterator<Item = TransitionId>,
 ) -> BTreeMap<TransitionId, LivenessReport> {
-  let graph = net.reachable_markings(initial_marking);
-  let in_cycle = transitions_in_cycle(&graph);
+  let in_cycle = transitions_in_cycle(graph);
 
-  let reachable_per_marking: BTreeMap<&Marking, BTreeSet<TransitionId>> = graph
+  let reachable_per_marking: BTreeMap<&M, BTreeSet<TransitionId>> = graph
     .keys()
-    .map(|marking| (marking, reachable_transitions_from(&graph, marking)))
+    .map(|marking| (marking, reachable_transitions_from(graph, marking)))
     .collect();
 
   let total: BTreeSet<TransitionId> = reachable_per_marking
@@ -242,12 +242,11 @@ pub fn liveness_report(
     .unwrap_or_default();
 
   let fires_from_initial = reachable_per_marking
-    .get(initial_marking)
+    .get(initial)
     .cloned()
     .unwrap_or_default();
 
-  net
-    .transition_ids()
+  transitions
     .map(|transition| {
       let level = if !fires_from_initial.contains(&transition) {
         Liveness::Dead
@@ -259,16 +258,55 @@ pub fn liveness_report(
         Liveness::PotentiallyFirable
       };
       let k = (level == Liveness::Dead).then_some(0);
-      let example = firing_path_to(&graph, initial_marking, transition).unwrap_or_default();
+      let example = firing_path_to(graph, initial, transition).unwrap_or_default();
 
       (transition, LivenessReport { level, k, example })
     })
     .collect()
 }
 
+/// Classify the liveness of every transition in `net`, over the exact reachability graph rooted
+/// at `initial_marking`.
+///
+/// Unlike calling [`liveness_of`] once per transition, this computes the
+/// reachability graph, the cycle-membership set, and each marking's reachable
+/// transitions exactly once, then classifies every transition off those
+/// precomputed sets in O(1) each.
+///
+/// # Panics
+///
+/// Same caveat as [`crate::net::PetriNet::reachable_markings`]: this never returns if the net is
+/// unbounded, since `R(M0)` itself is infinite. Use [`liveness_report_covering`] instead when
+/// that's a possibility.
+pub fn liveness_report(
+  net: &PetriNet,
+  initial_marking: &Marking,
+) -> BTreeMap<TransitionId, LivenessReport> {
+  let graph = net.reachable_markings(initial_marking);
+  classify_liveness(&graph, initial_marking, net.transition_ids())
+}
+
+/// Same classification as [`liveness_report`], but over the Karp-Miller coverability graph
+/// (always finite, even for an unbounded net) instead of the exact reachability set. On a
+/// bounded net the two graphs coincide exactly, so results agree with [`liveness_report`] there
+/// too.
+///
+/// Can lose precision on a pathological net: Ω collapses distinct markings together, so an edge
+/// in the abstraction isn't always witnessed by one single real firing sequence the way it is in
+/// `R(M0)`. Correct for the common textbook cases.
+pub fn liveness_report_covering(
+  net: &PetriNet,
+  initial_marking: &Marking,
+) -> BTreeMap<TransitionId, LivenessReport> {
+  let graph = crate::coverability::coverability_graph(net, initial_marking);
+  let initial: crate::coverability::ExtendedMarking = initial_marking.into();
+  classify_liveness(&graph, &initial, net.transition_ids())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::is_reversible_covering;
   use crate::net::{Arc, ArcKind, Weight};
 
   #[test]
@@ -566,5 +604,77 @@ mod tests {
     assert_eq!(report[&t_start].level, Liveness::PotentiallyFirable);
     assert_eq!(report[&t2].level, Liveness::RepeatableForever);
     assert_eq!(report[&t3].level, Liveness::RepeatableForever);
+  }
+
+  #[test]
+  fn test_liveness_report_covering_matches_murata_fig16_except_l2_l3() {
+    // Murata (1989) Fig. 16, the textbook L0/L1/L2/L3 example. Genuinely unbounded (t3 pumps
+    // p2 forever), so `liveness_report` can't touch it.
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+    let p2 = net.add_place();
+    let p3 = net.add_place();
+
+    // t3: p1 <-> self (net zero on p1), plus produce 1 into p2 every firing. Never depletes
+    // its own precondition.
+    let mut t3_arcs = Arc::default();
+    t3_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p1, Weight(1))
+      .add_output(p2, Weight(1));
+    let t3 = net.add_transition(t3_arcs);
+
+    // t1: consume p1, produce p3. One-shot per branch, nothing refills p1.
+    let mut t1_arcs = Arc::default();
+    t1_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_output(p3, Weight(1));
+    let t1 = net.add_transition(t1_arcs);
+
+    // t2: consume p2 (real, finite, never refilled), p3 <-> self.
+    let mut t2_arcs = Arc::default();
+    t2_arcs
+      .add_input(p2, ArcKind::Consume(Weight(1)))
+      .add_input(p3, ArcKind::Consume(Weight(1)))
+      .add_output(p3, Weight(1));
+    let t2 = net.add_transition(t2_arcs);
+
+    // t0: consume p1 and p3, sink.
+    let mut t0_arcs = Arc::default();
+    t0_arcs
+      .add_input(p1, ArcKind::Consume(Weight(1)))
+      .add_input(p3, ArcKind::Consume(Weight(1)));
+    let t0 = net.add_transition(t0_arcs);
+
+    let m0 = net.initial_marking(vec![1, 0, 0]);
+    let report = liveness_report_covering(&net, &m0);
+
+    assert_eq!(
+      report[&t0].level,
+      Liveness::Dead,
+      "p1 and p3 never both nonzero at once (paper: t0 is L0-live)"
+    );
+    assert_eq!(
+      report[&t1].level,
+      Liveness::PotentiallyFirable,
+      "fires from M0, never again once p1 is spent (paper: L1-live)"
+    );
+    assert_eq!(
+      report[&t3].level,
+      Liveness::RepeatableForever,
+      "replenishes its own precondition every firing (paper: L3-live)"
+    );
+    // Paper calls t2 L2-live (ArbitrarilyRepeatable), not L3. Real difference: t2's self-loop
+    // drains the finite p2, so any one run eventually starves it, even though a longer run is
+    // always reachable by starting with more p2. `classify_liveness` can't see that: this
+    // codebase never distinguishes L2 from L3 (see the `Liveness` doc comment), and Ω - 1 = Ω
+    // erases the "this drains a real resource" fact that would tell t2 and t3 apart. Known
+    // limitation, not a bug.
+    assert_eq!(report[&t2].level, Liveness::RepeatableForever);
+
+    assert!(
+      !is_reversible_covering(&net, &m0),
+      "the (0, 0, 1) dead end can't fire anything, so it can never get back to M0"
+    );
   }
 }
