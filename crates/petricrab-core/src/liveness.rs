@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::marking::Marking;
 use crate::net::{PetriNet, TransitionId};
@@ -112,6 +112,45 @@ fn fires_from(
   false
 }
 
+/// Shortest firing sequence from `from` that fires `target` at least once, or `None` if
+/// `target` never fires from `from` (i.e. it's dead there). Breadth-first with parent pointers
+/// keyed by marking, so it's the minimum-length witness rather than whatever path a DFS
+/// happens to find first.
+fn firing_path_to(
+  graph: &BTreeMap<Marking, Vec<(TransitionId, Marking)>>,
+  from: &Marking,
+  target: TransitionId,
+) -> Option<Vec<TransitionId>> {
+  let mut visited = BTreeSet::from([from.clone()]);
+  let mut queue = VecDeque::from([from.clone()]);
+  let mut came_from: BTreeMap<Marking, (TransitionId, Marking)> = BTreeMap::new();
+
+  while let Some(current) = queue.pop_front() {
+    let Some(edges) = graph.get(&current) else {
+      continue;
+    };
+    for (transition, next) in edges {
+      if *transition == target {
+        let mut path = Vec::new();
+        let mut cursor = current.clone();
+        while let Some((t, prev)) = came_from.get(&cursor) {
+          path.push(*t);
+          cursor = prev.clone();
+        }
+        path.reverse();
+        path.push(target);
+        return Some(path);
+      }
+      if visited.insert(next.clone()) {
+        came_from.insert(next.clone(), (*transition, current.clone()));
+        queue.push_back(next.clone());
+      }
+    }
+  }
+
+  None
+}
+
 /// Classify the liveness of `transition` over the reachability graph rooted at
 /// `initial_marking`.
 pub fn liveness_of(
@@ -142,10 +181,12 @@ pub fn liveness_of(
     Liveness::PotentiallyFirable
   };
 
+  let example = firing_path_to(graph, initial_marking, transition).unwrap_or_default();
+
   LivenessReport {
     level,
     k: None,
-    example: Vec::new(),
+    example,
   }
 }
 
@@ -218,15 +259,9 @@ pub fn liveness_report(
         Liveness::PotentiallyFirable
       };
       let k = (level == Liveness::Dead).then_some(0);
+      let example = firing_path_to(&graph, initial_marking, transition).unwrap_or_default();
 
-      (
-        transition,
-        LivenessReport {
-          level,
-          k,
-          example: Vec::new(),
-        },
-      )
+      (transition, LivenessReport { level, k, example })
     })
     .collect()
 }
@@ -361,6 +396,29 @@ mod tests {
     let report = liveness_of(&graph, &m0, t1);
 
     assert_eq!(report.level, Liveness::PotentiallyFirable);
+    assert_eq!(
+      report.example,
+      vec![t1],
+      "t1 fires directly from m0, so the shortest witness is a single step"
+    );
+  }
+
+  #[test]
+  fn test_liveness_of_dead_has_no_example() {
+    let mut net = PetriNet::default();
+    let p1 = net.add_place();
+
+    let mut t1_arcs = Arc::default();
+    t1_arcs.add_input(p1, ArcKind::Consume(Weight(1)));
+    let t1 = net.add_transition(t1_arcs);
+
+    let m0 = net.initial_marking(vec![0]);
+    let graph = net.reachable_markings(&m0);
+
+    assert!(
+      liveness_of(&graph, &m0, t1).example.is_empty(),
+      "a dead transition has no firing sequence to show"
+    );
   }
 
   #[test]
@@ -412,7 +470,7 @@ mod tests {
     t_start_arcs
       .add_input(p1, ArcKind::Consume(Weight(1)))
       .add_output(p2, Weight(1));
-    net.add_transition(t_start_arcs);
+    let t_start = net.add_transition(t_start_arcs);
 
     let mut t2_arcs = Arc::default();
     t2_arcs
@@ -432,6 +490,11 @@ mod tests {
     let report = liveness_of(&graph, &m0, t2);
 
     assert_eq!(report.level, Liveness::RepeatableForever);
+    assert_eq!(
+      report.example,
+      vec![t_start, t2],
+      "shortest path from m0 that fires t2: t_start then t2"
+    );
   }
 
   #[test]
