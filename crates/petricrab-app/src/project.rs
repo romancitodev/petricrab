@@ -10,10 +10,10 @@ use eframe::egui;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::app::{NodeId, PetriApp};
-use crate::model::{ArcKind, PetriNet, TransitionId};
+use crate::model::{ArcKind, PetriNet, PlaceId, TransitionId};
 
 const MAGIC: [u8; 4] = *b"PCRB";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 
 #[derive(Archive, Serialize, Deserialize, Clone, Copy)]
 enum ProjectArcKind {
@@ -46,6 +46,8 @@ struct ProjectPlace {
   tokens: u32,
   x: f32,
   y: f32,
+  /// `None` = no custom color, use the theme default.
+  color: Option<(u8, u8, u8, u8)>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -61,13 +63,34 @@ struct ProjectTransition {
 }
 
 #[derive(Archive, Serialize, Deserialize)]
+struct ProjectNote {
+  text: String,
+  x: f32,
+  y: f32,
+  w: f32,
+  h: f32,
+}
+
+#[derive(Archive, Serialize, Deserialize)]
 struct ProjectFile {
   places: Vec<ProjectPlace>,
   transitions: Vec<ProjectTransition>,
+  notes: Vec<ProjectNote>,
 }
 
 fn invalid_data(msg: impl Into<String>) -> io::Error {
   io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+/// Highest `N` among labels of the form `<prefix>N` (e.g. "p3", "t12") — 0 if none match.
+/// `next_place_n`/`next_transition_n` need to resume from here, not from a plain item count:
+/// a file with labels "t1, t2, t4" (a "t3" deleted before saving) has 3 transitions but the
+/// next auto-generated label must skip past 4, or it collides with the surviving "t4".
+fn max_numeric_suffix<'a>(labels: impl Iterator<Item = &'a str>, prefix: char) -> usize {
+  labels
+    .filter_map(|label| label.strip_prefix(prefix)?.parse::<usize>().ok())
+    .max()
+    .unwrap_or(0)
 }
 
 pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
@@ -91,6 +114,7 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
         tokens: app.net.tokens(p),
         x: pos.x,
         y: pos.y,
+        color: app.colors.get(&p).map(|c| (c.r(), c.g(), c.b(), c.a())),
       }
     })
     .collect();
@@ -130,7 +154,19 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
     })
     .collect();
 
-  let file = ProjectFile { places, transitions };
+  let notes = app
+    .notes
+    .values()
+    .map(|n| ProjectNote {
+      text: n.text.clone(),
+      x: n.pos.x,
+      y: n.pos.y,
+      w: n.size.x,
+      h: n.size.y,
+    })
+    .collect();
+
+  let file = ProjectFile { places, transitions, notes };
   let archived = rkyv::to_bytes::<rkyv::rancor::Error>(&file)
     .map_err(|e| io::Error::other(e.to_string()))?;
 
@@ -142,12 +178,14 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
 }
 
 /// Loaded state ready to drop into a fresh [`PetriApp`]: the rebuilt net, node positions,
-/// transition rotations, and the `p`/`t` counters so newly added nodes keep numbering forward
-/// from where the file left off.
+/// transition rotations, custom place colors, and the `p`/`t` counters so newly added nodes
+/// keep numbering forward from where the file left off.
 pub struct Loaded {
   pub net: PetriNet,
   pub positions: HashMap<NodeId, egui::Pos2>,
   pub rotation: HashMap<TransitionId, f32>,
+  pub colors: HashMap<PlaceId, egui::Color32>,
+  pub notes: slotmap::SlotMap<crate::app::NoteId, crate::app::NoteData>,
   pub next_place_n: usize,
   pub next_transition_n: usize,
 }
@@ -183,6 +221,7 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
 
   let mut net = PetriNet::new();
   let mut positions = HashMap::new();
+  let mut colors = HashMap::new();
   let place_ids: Vec<_> = file
     .places
     .iter()
@@ -190,6 +229,9 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
       let id = net.add_place(p.label.clone());
       net.set_tokens(id, p.tokens);
       positions.insert(NodeId::Place(id), egui::pos2(p.x, p.y));
+      if let Some((r, g, b, a)) = p.color {
+        colors.insert(id, egui::Color32::from_rgba_premultiplied(r, g, b, a));
+      }
       id
     })
     .collect();
@@ -213,12 +255,23 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
     }
   }
 
+  let mut notes = slotmap::SlotMap::default();
+  for n in &file.notes {
+    notes.insert(crate::app::NoteData {
+      pos: egui::pos2(n.x, n.y),
+      size: egui::vec2(n.w, n.h),
+      text: n.text.clone(),
+    });
+  }
+
   Ok(Loaded {
-    next_place_n: file.places.len(),
-    next_transition_n: file.transitions.len(),
+    next_place_n: max_numeric_suffix(file.places.iter().map(|p| p.label.as_str()), 'p'),
+    next_transition_n: max_numeric_suffix(file.transitions.iter().map(|t| t.label.as_str()), 't'),
     net,
     positions,
     rotation,
+    colors,
+    notes,
   })
 }
 
@@ -239,6 +292,12 @@ mod tests {
     let _ = app.net.add_arc_transition_to_place(t, p2, 2);
     app.positions.insert(NodeId::Place(p1), egui::pos2(10.0, 20.0));
     app.rotation.insert(t, 45.0);
+    app.colors.insert(p1, egui::Color32::from_rgb(200, 60, 30));
+    app.notes.insert(crate::app::NoteData {
+      pos: egui::pos2(5.0, 6.0),
+      size: egui::vec2(180.0, 100.0),
+      text: "leyenda".to_string(),
+    });
 
     let dir = std::env::temp_dir();
     let path = dir.join(format!("petricrab-test-{}.gpn", std::process::id()));
@@ -264,5 +323,36 @@ mod tests {
     );
     assert_eq!(loaded.net.inputs(loaded_t).len(), 1);
     assert_eq!(loaded.net.outputs(loaded_t).len(), 1);
+    assert_eq!(
+      loaded.colors.get(&loaded_p1),
+      Some(&egui::Color32::from_rgb(200, 60, 30))
+    );
+    assert_eq!(loaded.notes.len(), 1);
+    let loaded_note = loaded.notes.values().next().unwrap();
+    assert_eq!(loaded_note.text, "leyenda");
+    assert_eq!(loaded_note.pos, egui::pos2(5.0, 6.0));
+  }
+
+  #[test]
+  fn load_resumes_numbering_past_gaps_left_by_deleted_nodes() {
+    // Simulates a file saved after "p3"/"t3" were deleted: surviving labels are p1, p2, p4
+    // and t1, t2, t4 — non-contiguous, so a plain item count (3) would hand out "p4"/"t4"
+    // again on the next add, colliding with the ones already there.
+    let mut app = PetriApp::new();
+    for label in ["p1", "p2", "p4"] {
+      app.net.add_place(label);
+    }
+    for label in ["t1", "t2", "t4"] {
+      app.net.add_transition(label);
+    }
+
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("petricrab-test-gap-{}.gpn", std::process::id()));
+    save(&app, &path).unwrap();
+    let loaded = load(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    assert_eq!(loaded.next_place_n, 4);
+    assert_eq!(loaded.next_transition_n, 4);
   }
 }

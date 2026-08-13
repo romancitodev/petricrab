@@ -14,6 +14,14 @@ pub fn install(ctx: &egui::Context) {
       vec![asset.family.to_string()],
     );
   }
+  // The whole app reads as one monospaced "editor" surface — labels, buttons, menus, badges —
+  // instead of switching fonts between chrome and content. Reuse egui's own bundled monospace
+  // font (already registered under `FontFamily::Monospace`) for `Proportional` too, so every
+  // `TextStyle` (which all default to `Proportional`) keeps its usual size but renders
+  // monospaced, with no new font file to embed.
+  if let Some(mono) = fonts.families.get(&egui::FontFamily::Monospace).cloned() {
+    fonts.families.insert(egui::FontFamily::Proportional, mono);
+  }
   ctx.set_fonts(fonts);
 }
 

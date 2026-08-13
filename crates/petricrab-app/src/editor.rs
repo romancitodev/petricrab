@@ -12,11 +12,16 @@ const T_HALF_W: f32 = 6.0;
 const T_HALF_H: f32 = 26.0;
 const GRID_SPACING: f32 = 24.0;
 const ARC_HIT_DIST: f32 = 6.0;
-const HALO_PAD: f32 = 6.0;
+const HALO_PAD: f32 = 4.0;
 const ARC_CURVE_SEGMENTS: usize = 16;
 const ZOOM_MIN: f32 = 0.2;
 const ZOOM_MAX: f32 = 3.0;
 const MAX_ARROWHEADS: u32 = 4;
+const ROUNDED_CORNER_SEGMENTS: usize = 8;
+const INHIBIT_DASH_LEN: f32 = 5.0;
+const INHIBIT_GAP_LEN: f32 = 4.0;
+const NOTE_MIN_SIZE: egui::Vec2 = egui::vec2(90.0, 54.0);
+const NOTE_RESIZE_HANDLE: f32 = 14.0;
 
 /// All node/arc geometry (positions in `PetriApp::positions`, hit-testing, marquee math) lives
 /// in an infinite "world" space. `pan`/`zoom` describe the screen-space view of that world
@@ -33,14 +38,14 @@ fn to_world(screen: egui::Pos2, pan: egui::Vec2, zoom: f32) -> egui::Pos2 {
 #[derive(Clone, Copy)]
 enum ArcEnd {
   Arrow,
-  Diamond,
+  DoubleArrow,
   Circle,
 }
 
 fn arc_end_for_kind(kind: ArcKind) -> ArcEnd {
   match kind {
     ArcKind::Consume(_) => ArcEnd::Arrow,
-    ArcKind::Peek(_) => ArcEnd::Diamond,
+    ArcKind::Peek(_) => ArcEnd::DoubleArrow,
     ArcKind::Inhibit(_) => ArcEnd::Circle,
   }
 }
@@ -77,19 +82,30 @@ fn rotate_vec(v: egui::Vec2, degrees: f32) -> egui::Vec2 {
   egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-/// The transition's two (rotated) half-extent axes. `center ± right ± up` gives its four
-/// corners, in whatever space `half_w`/`half_h` are already expressed in.
-fn transition_axes(
-  app: &PetriApp,
-  t: crate::model::TransitionId,
-  half_w: f32,
-  half_h: f32,
-) -> (egui::Vec2, egui::Vec2) {
-  let angle = transition_angle(app, t);
-  (
-    rotate_vec(egui::vec2(half_w, 0.0), angle),
-    rotate_vec(egui::vec2(0.0, half_h), angle),
-  )
+/// Screen-space points approximating a rounded rectangle centered at `pos`, half-extents
+/// `half_w`/`half_h` (already zoom-scaled), rotated `angle` degrees clockwise (see
+/// `rotate_vec`). Radius is `half_w.min(half_h)` — the same "radius = half the short side"
+/// convention the axis-aligned pill already uses — so this matches that exact capsule shape
+/// at angle 0 and stays consistent at any other angle. The result is convex, so it paints
+/// directly via `egui::Shape::convex_polygon`; egui has no rotated-rounded-rect primitive.
+fn rounded_rect_polygon(pos: egui::Pos2, half_w: f32, half_h: f32, angle: f32) -> Vec<egui::Pos2> {
+  let r = half_w.min(half_h);
+  let corners = [
+    (egui::vec2(half_w - r, -(half_h - r)), -90.0f32, 0.0f32),
+    (egui::vec2(half_w - r, half_h - r), 0.0, 90.0),
+    (egui::vec2(-(half_w - r), half_h - r), 90.0, 180.0),
+    (egui::vec2(-(half_w - r), -(half_h - r)), 180.0, 270.0),
+  ];
+  let mut points = Vec::with_capacity((ROUNDED_CORNER_SEGMENTS + 1) * 4);
+  for (center, start_deg, end_deg) in corners {
+    for i in 0..=ROUNDED_CORNER_SEGMENTS {
+      let t = i as f32 / ROUNDED_CORNER_SEGMENTS as f32;
+      let deg = start_deg + (end_deg - start_deg) * t;
+      let local = center + egui::vec2(deg.to_radians().cos(), deg.to_radians().sin()) * r;
+      points.push(pos + rotate_vec(local, angle));
+    }
+  }
+  points
 }
 
 /// Distance from the node's center to its boundary along `dir` (unit vector, pointing away
@@ -150,6 +166,32 @@ fn hit_test(app: &PetriApp, pos: egui::Pos2) -> Option<NodeId> {
   None
 }
 
+/// `pos` is in world space. Notes live outside `app.positions`/`NodeId` (see `NoteData`), so
+/// they get their own small hit-test instead of a branch in `hit_test`.
+fn note_hit_test(app: &PetriApp, pos: egui::Pos2) -> Option<crate::app::NoteId> {
+  app.notes.iter().find_map(|(id, note)| {
+    if note_rect(note).contains(pos) {
+      Some(id)
+    } else {
+      None
+    }
+  })
+}
+
+/// `pos` is in world space. The small square at a note's bottom-right corner used to resize
+/// it — checked before `note_hit_test` on drag-start so grabbing the corner resizes instead of
+/// moving the whole note.
+fn note_resize_hit_test(app: &PetriApp, pos: egui::Pos2) -> Option<crate::app::NoteId> {
+  app.notes.iter().find_map(|(id, note)| {
+    let corner = note.pos + note.size;
+    if (pos - corner).length() <= NOTE_RESIZE_HANDLE {
+      Some(id)
+    } else {
+      None
+    }
+  })
+}
+
 /// `pos` is in world space. Approximates the curved arc as its control-point triangle for
 /// hit-testing (cheap and close enough for a ~6px pick radius).
 fn hit_test_arc(app: &PetriApp, pos: egui::Pos2) -> Option<Selection> {
@@ -189,7 +231,7 @@ fn nodes_in_rect(app: &PetriApp, rect: egui::Rect) -> HashSet<NodeId> {
 
 /// A dot at every grid intersection instead of full lines.
 fn draw_grid(painter: &egui::Painter, rect: egui::Rect, pan: egui::Vec2, zoom: f32) {
-  let c = theme::TEXT;
+  let c = theme::text();
   let dot = egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 38);
   let spacing = GRID_SPACING * zoom;
   if spacing < 4.0 {
@@ -295,52 +337,81 @@ fn draw_arc(
       ts(quad_bezier(from_edge, control, to_edge, t))
     })
     .collect();
-  painter.add(egui::Shape::line(points, stroke));
+  if let ArcEnd::Circle = end {
+    // Inhibit arcs read as "......o" in the classic notation — dash the line, keep the
+    // circle end-cap below solid.
+    let mut dashes = Vec::new();
+    egui::Shape::dashed_line_many(
+      &points,
+      stroke,
+      INHIBIT_DASH_LEN * zoom,
+      INHIBIT_GAP_LEN * zoom,
+      &mut dashes,
+    );
+    painter.extend(dashes);
+  } else {
+    painter.add(egui::Shape::line(points, stroke));
+  }
 
   let dir = end_dir;
-  let normal = egui::vec2(-dir.y, dir.x);
-  let reps = weight.clamp(1, MAX_ARROWHEADS);
-  for i in 0..reps {
-    let offset = dir * (i as f32 * 7.0);
-    let tip = to_edge - offset;
-    match end {
-      ArcEnd::Arrow => {
-        // A touch longer/narrower than a stock triangle so it reads as a sleek chevron instead
-        // of a blunt flag, at both toolbar-icon and zoomed-out scale.
-        let back = tip - dir * 11.0;
-        painter.add(egui::Shape::convex_polygon(
-          vec![ts(tip), ts(back + normal * 3.4), ts(back - normal * 3.4)],
-          stroke.color,
-          egui::Stroke::NONE,
-        ));
-      }
-      ArcEnd::Diamond => {
-        let back = tip - dir * 14.0;
-        let mid = tip - dir * 7.0;
-        painter.add(egui::Shape::convex_polygon(
-          vec![
-            ts(tip),
-            ts(mid + normal * 5.0),
-            ts(back),
-            ts(mid - normal * 5.0),
-          ],
-          egui::Color32::TRANSPARENT,
-          stroke,
-        ));
-      }
-      ArcEnd::Circle => {
-        // Hollow ring, not a filled dot: matches the classic inhibitor-arc notation (a filled
-        // circle would read as a token/peek marker instead) and keeps the endpoint light on a
-        // busy canvas.
-        let center = tip - dir * 4.5;
-        painter.circle_filled(ts(center), 4.5 * zoom, background);
-        painter.circle_stroke(
-          ts(center),
-          4.5 * zoom,
-          egui::Stroke::new(stroke.width, stroke.color),
-        );
+
+  // A touch longer/narrower than a stock triangle so it reads as a sleek chevron instead of a
+  // blunt flag, at both toolbar-icon and zoomed-out scale.
+  let chevron = |point: egui::Pos2, dir: egui::Vec2| {
+    let back = point - dir * 11.0;
+    let n = egui::vec2(-dir.y, dir.x);
+    painter.add(egui::Shape::convex_polygon(
+      vec![ts(point), ts(back + n * 3.4), ts(back - n * 3.4)],
+      stroke.color,
+      egui::Stroke::NONE,
+    ));
+  };
+
+  match end {
+    ArcEnd::DoubleArrow => {
+      // Peek/test arcs (`<-->`) are bidirectional by nature (reading, not consuming), so they
+      // get a chevron at each end pointing outward, rather than one arrowhead at the target.
+      // ponytail: ignores `weight`/reps here — the arc-kind selector already caps Peek's
+      // weight at 1, so there's no multi-rep stacking case to handle; extend to both ends if
+      // that UI cap is ever lifted.
+      chevron(to_edge, end_dir);
+      chevron(from_edge, -start_dir);
+    }
+    _ => {
+      let reps = weight.clamp(1, MAX_ARROWHEADS);
+      for i in 0..reps {
+        let tip = to_edge - dir * (i as f32 * 7.0);
+        match end {
+          ArcEnd::Arrow => chevron(tip, dir),
+          ArcEnd::Circle => {
+            // Hollow ring, not a filled dot: matches the classic inhibitor-arc notation (a
+            // filled circle would read as a token/peek marker instead) and keeps the endpoint
+            // light on a busy canvas.
+            let center = tip - dir * 4.5;
+            painter.circle_filled(ts(center), 4.5 * zoom, background);
+            painter.circle_stroke(
+              ts(center),
+              4.5 * zoom,
+              egui::Stroke::new(stroke.width, stroke.color),
+            );
+          }
+          ArcEnd::DoubleArrow => unreachable!(),
+        }
       }
     }
+  }
+}
+
+/// Near-black or near-white, whichever reads clearly on top of `bg` — used for the token dots,
+/// since a place's fill can now be any custom color the user picked, not just the theme
+/// default, and a fixed token color would go invisible against a similarly-toned fill.
+fn contrasting_on(bg: egui::Color32) -> egui::Color32 {
+  let luminance =
+    0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+  if luminance > 140.0 {
+    egui::Color32::from_rgb(20, 20, 22)
+  } else {
+    egui::Color32::from_rgb(245, 245, 246)
   }
 }
 
@@ -389,11 +460,9 @@ fn draw_selection_halo(
   zoom: f32,
   accent: egui::Color32,
 ) {
-  let fill = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 55);
-  let stroke = egui::Stroke::new(2.0 * zoom, accent);
+  let stroke = egui::Stroke::new(1.6 * zoom, accent);
   match node {
     NodeId::Place(_) => {
-      painter.circle_filled(pos, (PLACE_RADIUS + HALO_PAD) * zoom, fill);
       painter.circle_stroke(pos, (PLACE_RADIUS + HALO_PAD) * zoom, stroke);
     }
     NodeId::Transition(t) if transition_angle(app, t) == 0.0 => {
@@ -402,24 +471,18 @@ fn draw_selection_halo(
         egui::vec2((T_HALF_W + HALO_PAD) * 2.0, (T_HALF_H + HALO_PAD) * 2.0) * zoom,
       );
       let radius = (T_HALF_W + HALO_PAD) * zoom;
-      painter.rect_filled(r, radius, fill);
       painter.rect_stroke(r, radius, stroke, egui::StrokeKind::Outside);
     }
     NodeId::Transition(t) => {
-      let (right, up) = transition_axes(
-        app,
-        t,
+      let points = rounded_rect_polygon(
+        pos,
         (T_HALF_W + HALO_PAD) * zoom,
         (T_HALF_H + HALO_PAD) * zoom,
+        transition_angle(app, t),
       );
       painter.add(egui::Shape::convex_polygon(
-        vec![
-          pos + right + up,
-          pos - right + up,
-          pos - right - up,
-          pos + right - up,
-        ],
-        fill,
+        points,
+        egui::Color32::TRANSPARENT,
         stroke,
       ));
     }
@@ -454,7 +517,7 @@ fn draw_net(
     .collect();
   // Dimmer and thinner than the nodes themselves, so arcs read as connective tissue instead of
   // competing with the crisp white node outlines for attention.
-  let arc_stroke = egui::Stroke::new(1.2, theme::TEXT_WEAK);
+  let arc_stroke = egui::Stroke::new(1.2, theme::text_weak());
   let accent = visuals.selection.bg_fill;
 
   // Arcs (under nodes).
@@ -516,13 +579,14 @@ fn draw_net(
   // solid white in the shape.
   for p in app.net.place_ids() {
     let pos = s(node_pos(app, NodeId::Place(p), fallback));
-    painter.circle_filled(pos, PLACE_RADIUS * zoom, theme::INK);
+    let fill = app.colors.get(&p).copied().unwrap_or(theme::ink());
+    painter.circle_filled(pos, PLACE_RADIUS * zoom, fill);
     painter.circle_stroke(
       pos,
       PLACE_RADIUS * zoom,
-      egui::Stroke::new(1.4 * zoom, theme::TEXT),
+      egui::Stroke::new(1.4 * zoom, theme::text()),
     );
-    draw_tokens(painter, pos, app.net.tokens(p), zoom, theme::TEXT_STRONG);
+    draw_tokens(painter, pos, app.net.tokens(p), zoom, contrasting_on(fill));
     painter.text(
       pos + egui::vec2(0.0, (PLACE_RADIUS + 12.0) * zoom),
       egui::Align2::CENTER_CENTER,
@@ -538,9 +602,9 @@ fn draw_net(
     let pos = s(node_pos(app, NodeId::Transition(t), fallback));
     let angle = transition_angle(app, t);
     let fill = if enabled.contains(&t) {
-      theme::SUCCESS
+      theme::success()
     } else {
-      theme::TEXT_STRONG
+      theme::text_weak()
     };
     let label_y = if angle == 0.0 {
       let r = egui::Rect::from_center_size(pos, egui::vec2(T_HALF_W * 2.0, T_HALF_H * 2.0) * zoom);
@@ -548,19 +612,13 @@ fn draw_net(
       painter.rect_filled(r, T_HALF_W * zoom, fill);
       r.bottom()
     } else {
-      let (right, up) = transition_axes(app, t, T_HALF_W * zoom, T_HALF_H * zoom);
-      let corners = [
-        pos + right + up,
-        pos - right + up,
-        pos - right - up,
-        pos + right - up,
-      ];
+      let points = rounded_rect_polygon(pos, T_HALF_W * zoom, T_HALF_H * zoom, angle);
       painter.add(egui::Shape::convex_polygon(
-        corners.to_vec(),
+        points.clone(),
         fill,
         egui::Stroke::NONE,
       ));
-      corners.iter().map(|c| c.y).fold(f32::MIN, f32::max)
+      points.iter().map(|c| c.y).fold(f32::MIN, f32::max)
     };
     painter.text(
       egui::pos2(pos.x, label_y + 12.0 * zoom),
@@ -630,6 +688,90 @@ fn draw_net(
     }
     _ => {}
   }
+}
+
+/// World-space rect for a note, mirrors `note_hit_test`/`note_resize_hit_test`.
+fn note_rect(note: &crate::app::NoteData) -> egui::Rect {
+  egui::Rect::from_min_size(note.pos, note.size)
+}
+
+/// Free-form text annotations — a small card per note. The selected one's text is edited live
+/// via an actual `TextEdit` placed on top (see `note_edit_overlay`), so its static text is
+/// skipped here to avoid drawing under the widget; every other note gets wrapped, clipped
+/// static text painted directly (cheaper than a widget for something you're not touching).
+fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f32, visuals: &egui::Visuals) {
+  for (id, note) in app.notes.iter() {
+    let rect = egui::Rect::from_min_size(
+      to_screen(note.pos, pan, zoom),
+      note.size * zoom,
+    );
+    let selected = app.selection == Selection::Note(id);
+    painter.rect_filled(rect, 6.0 * zoom, theme::surface_raised());
+    painter.rect_stroke(
+      rect,
+      6.0 * zoom,
+      egui::Stroke::new(
+        if selected { 2.0 } else { 1.0 } * zoom,
+        if selected {
+          visuals.selection.bg_fill
+        } else {
+          theme::line_strong()
+        },
+      ),
+      egui::StrokeKind::Outside,
+    );
+
+    if !selected {
+      let text_rect = rect.shrink(8.0 * zoom);
+      let (display, color): (&str, egui::Color32) = if note.text.is_empty() {
+        ("Nota vacía…", theme::text_weak())
+      } else {
+        (note.text.as_str(), theme::text())
+      };
+      let galley = painter.layout(
+        display.to_string(),
+        egui::FontId::monospace(11.0 * zoom),
+        color,
+        text_rect.width(),
+      );
+      painter.with_clip_rect(text_rect).galley(text_rect.left_top(), galley, color);
+    }
+
+    // Resize handle: a small corner glyph, only worth showing (and interacting with) once
+    // the note is actually selected — otherwise it's just noise on every note at once.
+    if selected {
+      let handle_size = egui::vec2(10.0, 10.0) * zoom;
+      let handle = egui::Rect::from_min_size(rect.max - handle_size, handle_size);
+      painter.line_segment(
+        [
+          egui::pos2(handle.left(), handle.bottom()),
+          egui::pos2(handle.right(), handle.top()),
+        ],
+        egui::Stroke::new(1.5 * zoom, theme::text_weak()),
+      );
+    }
+  }
+}
+
+/// Places an actual editable `TextEdit` over the selected note, if any — the only way to type
+/// directly on the canvas instead of only through the Selection tab (`painter.text` can't be
+/// interactive). Called after `draw_notes` so it visually sits on top.
+fn note_edit_overlay(app: &mut PetriApp, ui: &mut egui::Ui, pan: egui::Vec2, zoom: f32) {
+  let Selection::Note(id) = app.selection else {
+    return;
+  };
+  let Some(note) = app.notes.get_mut(id) else {
+    return;
+  };
+  let rect = egui::Rect::from_min_size(to_screen(note.pos, pan, zoom), note.size * zoom).shrink(8.0 * zoom);
+  ui.put(
+    rect,
+    egui::TextEdit::multiline(&mut note.text)
+      .frame(egui::Frame::NONE)
+      .font(egui::FontId::monospace(11.0 * zoom))
+      .desired_width(rect.width())
+      .hint_text("Escribí lo que quieras…"),
+  );
 }
 
 /// `mouse`/`fallback` are in world space.
@@ -766,6 +908,9 @@ fn delete_selected(app: &mut PetriApp) {
     }
     Selection::ArcIn(p, t) => app.net.remove_arc_place_to_transition(p, t),
     Selection::ArcOut(t, p) => app.net.remove_arc_transition_to_place(t, p),
+    Selection::Note(id) => {
+      app.notes.remove(id);
+    }
     Selection::None => {}
   }
 }
@@ -790,6 +935,17 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
         app.positions.insert(NodeId::Transition(id), pos);
       }
     }
+    EditMode::AddNote => {
+      if note_hit_test(app, pos).is_none() {
+        let size = egui::vec2(180.0, 100.0);
+        let id = app.notes.insert(crate::app::NoteData {
+          pos: pos - size / 2.0,
+          size,
+          text: String::new(),
+        });
+        app.selection = Selection::Note(id);
+      }
+    }
     EditMode::Connect => match hit {
       Some(node) => match app.connect_from.take() {
         None => app.connect_from = Some(node),
@@ -797,17 +953,23 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
       },
       None => app.connect_from = None,
     },
-    EditMode::Select => match hit {
-      Some(node) => {
-        app.selection = Selection::Nodes(HashSet::from([node]));
-        if let NodeId::Transition(t) = node {
-          fire_step(app, t);
+    EditMode::Select => {
+      if let Some(note_id) = note_hit_test(app, pos) {
+        app.selection = Selection::Note(note_id);
+        return;
+      }
+      match hit {
+        Some(node) => {
+          app.selection = Selection::Nodes(HashSet::from([node]));
+          if let NodeId::Transition(t) = node {
+            fire_step(app, t);
+          }
+        }
+        None => {
+          app.selection = hit_test_arc(app, pos).unwrap_or(Selection::None);
         }
       }
-      None => {
-        app.selection = hit_test_arc(app, pos).unwrap_or(Selection::None);
-      }
-    },
+    }
   }
 }
 
@@ -820,16 +982,19 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
   let visuals = ui.visuals().clone();
   let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
   let rect = response.rect;
+  app.canvas_rect = rect;
   let pan = app.pan;
   let zoom = app.zoom;
   let fallback = to_world(rect.center(), pan, zoom);
 
   // CentralPanel has no fill of its own here, so paint the canvas background explicitly.
-  painter.rect_filled(rect, 0.0, theme::INK);
+  painter.rect_filled(rect, 0.0, theme::ink());
   if app.show_grid {
     draw_grid(&painter, rect, pan, zoom);
   }
   draw_net(app, &painter, fallback, pan, zoom, &visuals);
+  draw_notes(app, &painter, pan, zoom, &visuals);
+  note_edit_overlay(app, ui, pan, zoom);
 
   if app.mode == EditMode::Connect {
     if let Some(from) = app.connect_from {
@@ -917,15 +1082,33 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
     if response.drag_started() {
       if let Some(pos) = response.interact_pointer_pos() {
         let world = to_world(pos, pan, zoom);
-        app.dragging = hit_test(app, world);
-        if app.dragging.is_none() && app.mode == EditMode::Select {
-          app.marquee_start = Some(world);
-          app.marquee_current = Some(world);
+        if let Some(note_id) = note_resize_hit_test(app, world) {
+          app.resizing_note = Some(note_id);
+          app.selection = Selection::Note(note_id);
+        } else if let Some(note_id) = note_hit_test(app, world) {
+          app.dragging_note = Some(note_id);
+          app.selection = Selection::Note(note_id);
+        } else {
+          app.dragging = hit_test(app, world);
+          if app.dragging.is_none() && app.mode == EditMode::Select {
+            app.marquee_start = Some(world);
+            app.marquee_current = Some(world);
+          }
         }
       }
     }
     if response.dragged() {
-      if let Some(node) = app.dragging {
+      if let Some(note_id) = app.resizing_note {
+        let delta = response.drag_delta() / zoom;
+        if let Some(note) = app.notes.get_mut(note_id) {
+          note.size = (note.size + delta).max(NOTE_MIN_SIZE);
+        }
+      } else if let Some(note_id) = app.dragging_note {
+        let delta = response.drag_delta() / zoom;
+        if let Some(note) = app.notes.get_mut(note_id) {
+          note.pos += delta;
+        }
+      } else if let Some(node) = app.dragging {
         let delta = response.drag_delta() / zoom;
         // Dragging any node that's part of an active multi-selection moves the whole group;
         // dragging an unselected (or singly-selected) node only ever moves that one node.
@@ -955,6 +1138,8 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
     }
     if response.drag_stopped() {
       app.dragging = None;
+      app.dragging_note = None;
+      app.resizing_note = None;
       if let (Some(start), Some(current)) = (app.marquee_start.take(), app.marquee_current.take()) {
         let matched = nodes_in_rect(app, egui::Rect::from_two_pos(start, current));
         app.selection = if matched.is_empty() {
@@ -1019,6 +1204,9 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
       if i.key_pressed(egui::Key::C) {
         apply_mode(app, EditMode::Connect);
       }
+      if i.key_pressed(egui::Key::N) {
+        apply_mode(app, EditMode::AddNote);
+      }
     });
   }
 }
@@ -1026,6 +1214,12 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
 fn reset_view(app: &mut PetriApp) {
   app.pan = egui::Vec2::ZERO;
   app.zoom = 1.0;
+}
+
+/// Pans (without changing zoom) so `node`'s world position lands at the center of the canvas.
+pub fn center_on_node(app: &mut PetriApp, node: NodeId) {
+  let pos = node_pos(app, node, egui::Pos2::ZERO);
+  app.pan = app.canvas_rect.center().to_vec2() - pos.to_vec2() * app.zoom;
 }
 
 /// A "Rotación [ 45°]" row: free-form drag/type field plus a `+45°` shortcut button.
@@ -1058,17 +1252,53 @@ fn rotation_control(ui: &mut egui::Ui, app: &mut PetriApp, t: crate::model::Tran
   });
 }
 
+/// Sets up a flat, cohesive look for a dropdown/context menu's contents: roomier row padding,
+/// and a muted hover fill. `menu_item`/`danger_menu_item`/raw `Button`s in these scopes opt out
+/// of the *idle* frame themselves via `.frame_when_inactive(false)`, so only hover/press ever
+/// paint a background — dialed down here so it reads as a highlight, not a loud box.
+fn begin_flat_menu(ui: &mut egui::Ui) {
+  ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+  let muted = theme::surface_hover().gamma_multiply(0.5);
+  ui.visuals_mut().widgets.hovered.weak_bg_fill = muted;
+  ui.visuals_mut().widgets.hovered.bg_fill = muted;
+}
+
 fn menu_item(ui: &mut egui::Ui, icon_name: &'static str, label: &str) -> egui::Response {
-  ui.add(egui::Button::new((icons::icon(icon_name, 13.0), label)).corner_radius(6.0))
+  ui.add(
+    egui::Button::new((icons::icon(icon_name, 13.0), label))
+      .corner_radius(6.0)
+      .frame_when_inactive(false),
+  )
+}
+
+/// A menu row that toggles something on/off — a button, not a checkbox: same icon+label shape
+/// as `menu_item`, but tinted with the app's selected/active style when `checked` (matching how
+/// the toolbar's mode buttons show which one is active) and a check glyph up front.
+fn toggle_menu_item(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Response {
+  let check = icons::icon("check", 13.0).color(if checked {
+    ui.visuals().text_color()
+  } else {
+    egui::Color32::TRANSPARENT
+  });
+  let mut button = egui::Button::new((check, label))
+    .corner_radius(6.0)
+    // `.selected()` pulls in the theme's full-strength accent fill, which reads as a glaring
+    // pill next to the rest of this flat menu — a faint tint is enough to say "this is on".
+    .frame_when_inactive(checked);
+  if checked {
+    button = button.fill(theme::accent().gamma_multiply(0.18)).frame(true);
+  }
+  ui.add(button)
 }
 
 fn danger_menu_item(ui: &mut egui::Ui, icon_name: &'static str, label: &str) -> egui::Response {
   ui.add(
     egui::Button::new((
-      icons::icon(icon_name, 13.0).color(theme::DANGER),
-      egui::RichText::new(label).color(theme::DANGER),
+      icons::icon(icon_name, 13.0).color(theme::danger()),
+      egui::RichText::new(label).color(theme::danger()),
     ))
-    .corner_radius(6.0),
+    .corner_radius(6.0)
+    .frame_when_inactive(false),
   )
 }
 
@@ -1081,6 +1311,7 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
     return;
   };
   ui.set_min_width(190.0);
+  begin_flat_menu(ui);
   match target {
     ContextTarget::Node(NodeId::Place(p)) if app.net.place_ids().any(|id| id == p) => {
       ui.add(
@@ -1099,7 +1330,9 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
       if ui
         .add_enabled(
           has_tokens,
-          egui::Button::new((icons::icon("minus", 13.0), "Quitar token")).corner_radius(6.0),
+          egui::Button::new((icons::icon("minus", 13.0), "Quitar token"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
         )
         .clicked()
       {
@@ -1110,7 +1343,9 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
       if ui
         .add_enabled(
           has_tokens,
-          egui::Button::new((icons::icon("x", 13.0), "Vaciar tokens")).corner_radius(6.0),
+          egui::Button::new((icons::icon("x", 13.0), "Vaciar tokens"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
         )
         .clicked()
       {
@@ -1136,7 +1371,9 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
       if ui
         .add_enabled(
           enabled,
-          egui::Button::new((icons::icon("zap", 13.0), "Disparar")).corner_radius(6.0),
+          egui::Button::new((icons::icon("zap", 13.0), "Disparar"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
         )
         .clicked()
       {
@@ -1197,7 +1434,9 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
         if ui
           .add_enabled(
             w > 1,
-            egui::Button::new((icons::icon("minus", 13.0), "Disminuir peso")).corner_radius(6.0),
+            egui::Button::new((icons::icon("minus", 13.0), "Disminuir peso"))
+              .corner_radius(6.0)
+              .frame_when_inactive(false),
           )
           .clicked()
         {
@@ -1234,7 +1473,8 @@ fn context_menu_contents(app: &mut PetriApp, ui: &mut egui::Ui) {
         .add_enabled(
           has_any,
           egui::Button::new((icons::icon("box-select", 13.0), "Seleccionar todo"))
-            .corner_radius(6.0),
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
         )
         .clicked()
       {
@@ -1290,6 +1530,8 @@ fn open_path(app: &mut PetriApp, path: std::path::PathBuf) {
       app.net = loaded.net;
       app.positions = loaded.positions;
       app.rotation = loaded.rotation;
+      app.colors = loaded.colors;
+      app.notes = loaded.notes;
       app.next_place_n = loaded.next_place_n;
       app.next_transition_n = loaded.next_transition_n;
       app.notify(
@@ -1362,8 +1604,12 @@ fn file_save(app: &mut PetriApp) {
 /// Top menu bar: identity mark on the left, then File/Edit/View menus.
 pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
   egui::MenuBar::new().ui(ui, |ui| {
+    // `MenuBar` forces a cramped `(2, 0)` button padding on its direct contents (fine for a
+    // dense app menu bar in general, but reads as squished here) — give the top-level
+    // Archivo/Editar/Ver openers and the theme toggle some breathing room instead.
+    ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
     ui.horizontal(|ui| {
-      ui.label(icons::icon("workflow", 16.0).color(theme::ACCENT));
+      ui.label(icons::icon("workflow", 16.0).color(theme::accent()));
       ui.add_space(2.0);
       ui.label(egui::RichText::new("petricrab").strong().size(14.0));
     });
@@ -1373,6 +1619,7 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
 
     ui.menu_button("Archivo", |ui| {
       ui.set_min_width(170.0);
+      begin_flat_menu(ui);
       if menu_item(ui, "file-plus", "Nuevo").clicked() {
         file_new(app);
         ui.close();
@@ -1421,24 +1668,62 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
 
     ui.menu_button("Editar", |ui| {
       ui.set_min_width(170.0);
+      begin_flat_menu(ui);
       ui.add_enabled(
         false,
-        egui::Button::new((icons::icon("undo-2", 13.0), "Deshacer")).corner_radius(6.0),
+        egui::Button::new((icons::icon("undo-2", 13.0), "Deshacer"))
+          .corner_radius(6.0)
+          .frame_when_inactive(false),
       )
       .on_disabled_hover_text("Próximamente");
       ui.add_enabled(
         false,
-        egui::Button::new((icons::icon("redo-2", 13.0), "Rehacer")).corner_radius(6.0),
+        egui::Button::new((icons::icon("redo-2", 13.0), "Rehacer"))
+          .corner_radius(6.0)
+          .frame_when_inactive(false),
       )
       .on_disabled_hover_text("Próximamente");
     });
 
     ui.menu_button("Ver", |ui| {
-      ui.set_min_width(170.0);
-      ui.checkbox(&mut app.show_grid, "Mostrar grilla");
+      ui.set_min_width(190.0);
+      begin_flat_menu(ui);
+      if toggle_menu_item(ui, app.show_grid, "Mostrar grilla").clicked() {
+        app.show_grid = !app.show_grid;
+      }
       if menu_item(ui, "locate-fixed", "Reiniciar vista").clicked() {
         reset_view(app);
         ui.close();
+      }
+      ui.separator();
+      if toggle_menu_item(ui, app.reachability.is_some(), "Explorar espacio de estados")
+        .clicked()
+      {
+        crate::dock::toggle_reachability(app);
+      }
+      if toggle_menu_item(ui, app.properties.is_some(), "Propiedades del net").clicked() {
+        crate::dock::toggle_properties(app);
+      }
+      let show_outline = app.dock.find_tab(&crate::dock::DockTab::Outline).is_some();
+      if toggle_menu_item(ui, show_outline, "Estructura").clicked() {
+        crate::dock::toggle_outline(app);
+      }
+    });
+
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+      let icon_name = if app.light_mode { "moon" } else { "sun" };
+      let tooltip = if app.light_mode {
+        "Cambiar a modo oscuro"
+      } else {
+        "Cambiar a modo claro"
+      };
+      if ui
+        .add(egui::Button::new(icons::icon(icon_name, 15.0)).corner_radius(6.0))
+        .on_hover_text(tooltip)
+        .clicked()
+      {
+        app.light_mode = !app.light_mode;
+        theme::set_light(ctx, app.light_mode);
       }
     });
   });
@@ -1463,58 +1748,8 @@ pub(crate) fn card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) 
     .show(ui, add_contents);
 }
 
-/// Configuration for a floating analysis window — see [`floating_window`].
-pub(crate) struct WindowSpec {
-  pub id: &'static str,
-  pub icon: &'static str,
-  pub title: &'static str,
-  pub default_size: egui::Vec2,
-  pub min_size: egui::Vec2,
-  pub max_size: Option<egui::Vec2>,
-  pub movable: bool,
-}
-
-/// Shared chrome for every floating analysis window (reachability graph, properties, future
-/// ones): an icon + title header instead of a bare label, no collapse-to-titlebar affordance
-/// (these are dedicated panels, not generic inspectors you tuck away), and one consistent
-/// frame/shadow/corner-radius instead of each window re-deriving its own.
-///
-/// Returns the window's on-screen rect this frame (`None` if it wasn't drawn, e.g. collapsed to
-/// nothing) — callers that embed something position-sensitive (egui_graphs' reachability graph)
-/// need this to detect the window moving; see `ReachabilityState::note_window_moved`.
-pub(crate) fn floating_window(
-  ctx: &egui::Context,
-  visuals: &egui::Visuals,
-  spec: WindowSpec,
-  open: &mut bool,
-  add_contents: impl FnOnce(&mut egui::Ui),
-) -> Option<egui::Rect> {
-  let mut window = egui::Window::new((icons::icon(spec.icon, 15.0), spec.title))
-    .id(egui::Id::new(spec.id))
-    .frame(
-      egui::Frame::default()
-        .fill(visuals.panel_fill)
-        .stroke(egui::Stroke::new(1.0, visuals.window_stroke.color))
-        .corner_radius(theme::RADIUS_LG)
-        .shadow(visuals.window_shadow)
-        .inner_margin(egui::Margin::symmetric(16, 14)),
-    )
-    .default_size(spec.default_size)
-    .min_size(spec.min_size)
-    .resizable(true)
-    .collapsible(false)
-    .movable(spec.movable)
-    .open(open);
-  if let Some(max_size) = spec.max_size {
-    window = window.max_size(max_size);
-  }
-  window
-    .show(ctx, add_contents)
-    .map(|inner| inner.response.rect)
-}
-
 fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-  let danger = theme::DANGER;
+  let danger = theme::danger();
   ui.add(
     egui::Button::new((
       icons::icon("trash-2", 14.0).color(danger),
@@ -1708,6 +1943,22 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
           if stepper(ui, "Tokens", &mut tokens, 0, 999) {
             app.net.set_tokens(p, tokens);
           }
+          ui.add_space(10.0);
+          ui.horizontal(|ui| {
+            ui.label("Color");
+            let mut color = app.colors.get(&p).copied().unwrap_or(theme::ink());
+            if ui.color_edit_button_srgba(&mut color).changed() {
+              app.colors.insert(p, color);
+            }
+            if app.colors.contains_key(&p)
+              && ui
+                .add(egui::Button::new(icons::icon("rotate-ccw", 13.0)).frame(false))
+                .on_hover_text("Restablecer color")
+                .clicked()
+            {
+              app.colors.remove(&p);
+            }
+          });
           ui.add_space(14.0);
           if destructive_button(ui, "Eliminar").clicked() {
             delete_selected(app);
@@ -1838,10 +2089,81 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
         delete_selected(app);
       }
     }
+    Selection::Note(id) if app.notes.contains_key(id) => {
+      ui.horizontal(|ui| {
+        ui.label(icons::icon("sticky-note", 15.0));
+        ui.label(egui::RichText::new("Nota").strong());
+      });
+      ui.add_space(12.0);
+      ui.separator();
+      ui.add_space(10.0);
+      if let Some(note) = app.notes.get_mut(id) {
+        ui.add(
+          egui::TextEdit::multiline(&mut note.text)
+            .desired_rows(6)
+            .desired_width(f32::INFINITY)
+            .hint_text("Escribí lo que quieras…"),
+        );
+      }
+      ui.add_space(14.0);
+      if destructive_button(ui, "Eliminar").clicked() {
+        delete_selected(app);
+      }
+    }
     _ => {
       ui.weak("Nada seleccionado");
     }
   }
+}
+
+/// Full list of the net's places/transitions, click-to-select-and-center — the "where is
+/// everything" view for nets too big to eyeball on the canvas at a glance.
+pub fn outline_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
+  egui::ScrollArea::vertical().show(ui, |ui| {
+    section_label(ui, "Places");
+    ui.add_space(4.0);
+    let place_ids: Vec<_> = app.net.place_ids().collect();
+    if place_ids.is_empty() {
+      ui.weak("(ninguno)");
+    }
+    for p in place_ids {
+      let selected = app.selection == Selection::Nodes([NodeId::Place(p)].into());
+      let row = ui.add(
+        egui::Button::new(format!("{}   ·   {} tok.", app.net.place_label(p), app.net.tokens(p)))
+          .frame(false)
+          .selected(selected)
+          .min_size(egui::vec2(ui.available_width(), 0.0)),
+      );
+      if row.clicked() {
+        app.selection = Selection::Nodes([NodeId::Place(p)].into());
+        center_on_node(app, NodeId::Place(p));
+      }
+    }
+    ui.add_space(10.0);
+
+    section_label(ui, "Transitions");
+    ui.add_space(4.0);
+    let marking = app.net.marking();
+    let enabled = fire::enabled_transitions(&app.net, &marking);
+    let transition_ids: Vec<_> = app.net.transition_ids().collect();
+    if transition_ids.is_empty() {
+      ui.weak("(ninguna)");
+    }
+    for t in transition_ids {
+      let selected = app.selection == Selection::Nodes([NodeId::Transition(t)].into());
+      let icon_name = if enabled.contains(&t) { "zap" } else { "ban" };
+      let row = ui.add(
+        egui::Button::new((icons::icon(icon_name, 13.0), app.net.transition_label(t)))
+          .frame(false)
+          .selected(selected)
+          .min_size(egui::vec2(ui.available_width(), 0.0)),
+      );
+      if row.clicked() {
+        app.selection = Selection::Nodes([NodeId::Transition(t)].into());
+        center_on_node(app, NodeId::Transition(t));
+      }
+    }
+  });
 }
 
 fn mode_icon_and_tooltip(mode: EditMode) -> (&'static str, &'static str) {
@@ -1850,6 +2172,7 @@ fn mode_icon_and_tooltip(mode: EditMode) -> (&'static str, &'static str) {
     EditMode::AddPlace => ("circle", "Agregar place (P)"),
     EditMode::AddTransition => ("rectangle-vertical", "Agregar transition (T)"),
     EditMode::Connect => ("cable", "Conectar arco (C)"),
+    EditMode::AddNote => ("sticky-note", "Agregar nota (N)"),
   }
 }
 
@@ -1860,6 +2183,7 @@ pub fn toolbar(app: &mut PetriApp, ui: &mut egui::Ui) {
       EditMode::AddPlace,
       EditMode::AddTransition,
       EditMode::Connect,
+      EditMode::AddNote,
     ] {
       let (icon_name, tooltip) = mode_icon_and_tooltip(mode);
       let button = egui::Button::new(icons::icon(icon_name, 17.0))

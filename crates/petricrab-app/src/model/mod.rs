@@ -4,6 +4,7 @@ pub mod fire;
 
 use slotmap::SlotMap;
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 slotmap::new_key_type! {
     pub struct PlaceId;
@@ -213,6 +214,26 @@ impl PetriNet {
       .transitions
       .get(t)
       .map_or(&[], |transition| transition.outputs.as_slice())
+  }
+
+  /// Cheap signature that changes whenever the net's structure or marking changes. Lets
+  /// UI panels that cache an expensive analysis (reachability graph, liveness/reversibility)
+  /// notice "the net moved on, recompute me" just by comparing this each frame, instead of
+  /// threading a dirty flag through every one of the many call sites that mutate a net.
+  pub fn fingerprint(&self) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (id, place) in self.places.iter() {
+      id.hash(&mut hasher);
+      place.label.hash(&mut hasher);
+      place.tokens.hash(&mut hasher);
+    }
+    for (id, transition) in self.transitions.iter() {
+      id.hash(&mut hasher);
+      transition.label.hash(&mut hasher);
+      transition.inputs.hash(&mut hasher);
+      transition.outputs.hash(&mut hasher);
+    }
+    hasher.finish()
   }
 }
 
