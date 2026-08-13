@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: petricrab-app
+            asset_name: petricrab-app-linux-x86_64
+          - os: windows-latest
+            artifact: petricrab-app.exe
+            asset_name: petricrab-app-windows-x86_64.exe
+          - os: macos-latest
+            artifact: petricrab-app
+            asset_name: petricrab-app-macos-x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
+      - run: cargo build --release -p petricrab-app
+
+      - run: cp target/release/${{ matrix.artifact }} ${{ matrix.asset_name }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}

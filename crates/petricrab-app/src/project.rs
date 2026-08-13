@@ -13,7 +13,7 @@ use crate::app::{NodeId, PetriApp};
 use crate::model::{ArcKind, PetriNet, PlaceId, TransitionId};
 
 const MAGIC: [u8; 4] = *b"PCRB";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 #[derive(Archive, Serialize, Deserialize, Clone, Copy)]
 enum ProjectArcKind {
@@ -69,6 +69,8 @@ struct ProjectNote {
   y: f32,
   w: f32,
   h: f32,
+  /// `None` = no custom color, use the theme default.
+  color: Option<(u8, u8, u8, u8)>,
 }
 
 #[derive(Archive, Serialize, Deserialize)]
@@ -163,6 +165,7 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
       y: n.pos.y,
       w: n.size.x,
       h: n.size.y,
+      color: n.color.map(|c| (c.r(), c.g(), c.b(), c.a())),
     })
     .collect();
 
@@ -261,6 +264,7 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
       pos: egui::pos2(n.x, n.y),
       size: egui::vec2(n.w, n.h),
       text: n.text.clone(),
+      color: n.color.map(|(r, g, b, a)| egui::Color32::from_rgba_premultiplied(r, g, b, a)),
     });
   }
 
@@ -297,6 +301,7 @@ mod tests {
       pos: egui::pos2(5.0, 6.0),
       size: egui::vec2(180.0, 100.0),
       text: "leyenda".to_string(),
+      color: Some(egui::Color32::from_rgb(80, 120, 200)),
     });
 
     let dir = std::env::temp_dir();
@@ -331,6 +336,7 @@ mod tests {
     let loaded_note = loaded.notes.values().next().unwrap();
     assert_eq!(loaded_note.text, "leyenda");
     assert_eq!(loaded_note.pos, egui::pos2(5.0, 6.0));
+    assert_eq!(loaded_note.color, Some(egui::Color32::from_rgb(80, 120, 200)));
   }
 
   #[test]

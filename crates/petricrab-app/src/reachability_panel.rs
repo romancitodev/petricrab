@@ -5,7 +5,7 @@ use egui_graphs::{Graph, MetadataFrame, SettingsInteraction, SettingsNavigation,
 use petgraph::stable_graph::{DefaultIx, NodeIndex, StableGraph};
 
 use crate::analysis::{ExploreError, StateGraph, explore};
-use crate::editor::{section_label, token_chip};
+use crate::editor::{marking_chips, section_label};
 use crate::icons;
 use crate::model::fire::enabled_transitions;
 use crate::model::{Marking, PetriNet};
@@ -253,7 +253,12 @@ impl ReachabilityState {
     self.target_zoom = (self.target_zoom * factor).clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
   }
 
-  pub fn show(&mut self, ui: &mut egui::Ui, net: &PetriNet) {
+  pub fn show(
+    &mut self,
+    ui: &mut egui::Ui,
+    net: &PetriNet,
+    route_modal: &mut Option<crate::route_modal::RouteModal>,
+  ) {
     let fingerprint = net.fingerprint();
     if fingerprint != self.fingerprint {
       *self = Self::explore(net);
@@ -483,18 +488,14 @@ impl ReachabilityState {
       Some(state_idx) => {
         let marking = &self.state_graph.nodes[state_idx];
         section_label(ui, "Marcado");
-        ui.horizontal_wrapped(|ui| {
-          let mut any = false;
-          for (&place, &tokens) in marking.iter() {
-            if tokens > 0 {
-              any = true;
-              token_chip(ui, net.place_label(place), tokens);
-            }
-          }
-          if !any {
-            ui.weak("(vacío)");
-          }
-        });
+        marking_chips(ui, net, marking);
+        if state_idx != 0
+          && let Some((states, transitions)) =
+            crate::analysis::path_to(net, &self.state_graph.nodes[0], marking)
+          && ui.button("Ver ruta").clicked()
+        {
+          *route_modal = Some(crate::route_modal::RouteModal::new(net, states, transitions));
+        }
         ui.add_space(10.0);
 
         let enabled = enabled_transitions(net, marking);

@@ -128,6 +128,8 @@ pub struct NetBehavior {
   /// Only the full set when `precise` is true. Otherwise, if `reversible` is true, this is just
   /// `[initial_marking]`, not the full set.
   pub home_states: Vec<ModelMarking>,
+  /// Dead markings reachable from `M0`. Same `precise` split as everything else here.
+  pub deadlocks: Vec<Deadlock>,
   /// True if `liveness`/`reversible` came from the exact reachability set (the net is bounded).
   /// False means they came from `petricrab_core::{liveness_report_covering,
   /// is_reversible_covering}` instead, over the coverability graph. `reversible` stays exact
@@ -136,10 +138,90 @@ pub struct NetBehavior {
   pub precise: bool,
 }
 
+/// The shortest firing sequence from `M0` to a dead marking (no enabled transitions), plus every
+/// state along the way (`states[0] == M0`, `states[i + 1]` is `states[i]` after firing
+/// `example[i]`). `states` can be shorter than `example.len() + 1` when it came from
+/// `deadlocks_covering`: the coverability graph's edges aren't always witnessed by one real
+/// firing sequence, so replaying `example` against the real net can dead-end early.
+pub struct Deadlock {
+  pub example: Vec<ModelTransitionId>,
+  pub states: Vec<ModelMarking>,
+}
+
+/// Replays `path` from `from` against the real net, returning every state visited
+/// (`states[0] == from`). Stops early (shorter than `path.len() + 1`) if some transition in
+/// `path` turns out not to be enabled when actually fired — only possible for a witness that
+/// came from a coverability graph instead of the exact reachability set.
+pub fn replay_path(net: &ModelNet, from: &ModelMarking, path: &[ModelTransitionId]) -> Vec<ModelMarking> {
+  let mut states = vec![from.clone()];
+  for &t in path {
+    let Ok(next) = fire_in(net, states.last().unwrap(), t) else {
+      break;
+    };
+    states.push(next);
+  }
+  states
+}
+
+/// Shortest firing sequence from `from` to `target`, found by exploring `R(from)` — `None` if
+/// the net is unbounded/too big to explore, or `target` just isn't reachable. Powers "show the
+/// route" for anything keyed by a marking instead of a ready-made witness (home states, a
+/// clicked reachability-graph node), by reusing the same BFS `explore` already does.
+pub fn path_to(
+  net: &ModelNet,
+  from: &ModelMarking,
+  target: &ModelMarking,
+) -> Option<(Vec<ModelMarking>, Vec<ModelTransitionId>)> {
+  let state_graph = explore(net, from).ok()?;
+  let target_idx = state_graph.nodes.iter().position(|m| m == target)?;
+
+  let mut came_from: HashMap<usize, (ModelTransitionId, usize)> = HashMap::new();
+  let mut visited = std::collections::HashSet::from([0usize]);
+  let mut queue = VecDeque::from([0usize]);
+
+  'bfs: while let Some(idx) = queue.pop_front() {
+    for edge in state_graph.edges.iter().filter(|e| e.from == idx) {
+      if visited.insert(edge.to) {
+        came_from.insert(edge.to, (edge.via, idx));
+        if edge.to == target_idx {
+          break 'bfs;
+        }
+        queue.push_back(edge.to);
+      }
+    }
+  }
+
+  if target_idx != 0 && !came_from.contains_key(&target_idx) {
+    return None;
+  }
+
+  let mut transitions = Vec::new();
+  let mut idx = target_idx;
+  while let Some(&(t, prev)) = came_from.get(&idx) {
+    transitions.push(t);
+    idx = prev;
+  }
+  transitions.reverse();
+
+  let states = replay_path(net, from, &transitions);
+  Some((states, transitions))
+}
+
 pub struct NetProperties {
   pub boundedness: Vec<(ModelPlaceId, petricrab_core::Boundedness)>,
   pub safe: bool,
   pub behavior: NetBehavior,
+}
+
+fn to_model_marking(
+  net: &petricrab_core::PetriNet,
+  reverse_places: &HashMap<petricrab_core::PlaceId, ModelPlaceId>,
+  marking: &petricrab_core::Marking,
+) -> ModelMarking {
+  net
+    .place_ids()
+    .filter_map(|p| reverse_places.get(&p).map(|&mp| (mp, marking.tokens(p) as u32)))
+    .collect()
 }
 
 pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> NetProperties {
@@ -189,6 +271,12 @@ pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> NetProperties {
     })
     .collect();
 
+  let reverse_places: HashMap<petricrab_core::PlaceId, ModelPlaceId> = analysis
+    .place_map
+    .iter()
+    .map(|(&model_p, &analysis_p)| (analysis_p, model_p))
+    .collect();
+
   let reversible = if precise {
     petricrab_core::is_reversible(&analysis.net, &analysis.initial)
   } else {
@@ -196,24 +284,9 @@ pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> NetProperties {
   };
 
   let home_states = if precise {
-    let reverse_places: HashMap<petricrab_core::PlaceId, ModelPlaceId> = analysis
-      .place_map
-      .iter()
-      .map(|(&model_p, &analysis_p)| (analysis_p, model_p))
-      .collect();
     petricrab_core::home_states(&analysis.net, &analysis.initial)
       .into_iter()
-      .map(|home| {
-        analysis
-          .net
-          .place_ids()
-          .filter_map(|p| {
-            reverse_places
-              .get(&p)
-              .map(|&mp| (mp, home.tokens(p) as u32))
-          })
-          .collect::<ModelMarking>()
-      })
+      .map(|home| to_model_marking(&analysis.net, &reverse_places, &home))
       .collect()
   } else if reversible {
     // Not the full set, but the coverability graph's root is never Ω (see
@@ -223,6 +296,35 @@ pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> NetProperties {
     Vec::new()
   };
 
+  let deadlock_examples: Vec<Vec<ModelTransitionId>> = if precise {
+    petricrab_core::deadlocks(&analysis.net, &analysis.initial)
+      .into_values()
+      .map(|example| {
+        example
+          .iter()
+          .filter_map(|t| reverse_transitions.get(t).copied())
+          .collect()
+      })
+      .collect()
+  } else {
+    petricrab_core::deadlocks_covering(&analysis.net, &analysis.initial)
+      .into_iter()
+      .map(|example| {
+        example
+          .iter()
+          .filter_map(|t| reverse_transitions.get(t).copied())
+          .collect()
+      })
+      .collect()
+  };
+  let deadlocks: Vec<Deadlock> = deadlock_examples
+    .into_iter()
+    .map(|example| {
+      let states = replay_path(net, marking, &example);
+      Deadlock { example, states }
+    })
+    .collect();
+
   NetProperties {
     boundedness,
     safe,
@@ -230,6 +332,7 @@ pub fn analyze(net: &ModelNet, marking: &ModelMarking) -> NetProperties {
       liveness,
       reversible,
       home_states,
+      deadlocks,
       precise,
     },
   }

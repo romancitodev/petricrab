@@ -1,10 +1,9 @@
 use eframe::egui;
 
 use crate::analysis::{self, NetProperties};
-use crate::editor::section_label;
+use crate::editor::{marking_chips, section_label};
 use crate::icons;
 use crate::model::PetriNet;
-use crate::reachability_panel::marking_text;
 
 pub struct PropertiesState {
   props: NetProperties,
@@ -37,7 +36,12 @@ impl PropertiesState {
     }
   }
 
-  pub fn show(&mut self, ui: &mut egui::Ui, net: &PetriNet) {
+  pub fn show(
+    &mut self,
+    ui: &mut egui::Ui,
+    net: &PetriNet,
+    route_modal: &mut Option<crate::route_modal::RouteModal>,
+  ) {
     let fingerprint = net.fingerprint();
     if fingerprint != self.fingerprint {
       *self = Self::compute(net);
@@ -104,34 +108,31 @@ impl PropertiesState {
     if behavior.liveness.is_empty() {
       ui.weak("(sin transiciones)");
     }
-    egui::Grid::new("liveness_grid")
-      .num_columns(2)
-      .spacing([12.0, 4.0])
-      .show(ui, |ui| {
-        for t in &behavior.liveness {
-          ui.label(net.transition_label(t.transition));
-          ui.horizontal(|ui| {
-            let (icon_name, color) = liveness_icon(t.level);
-            status_badge(ui, icon_name, liveness_label(t.level), color);
-            if !behavior.precise {
-              status_badge(ui, "triangle-alert", "aprox.", ui.visuals().warn_fg_color);
-            }
-          });
-          ui.end_row();
-          if !t.example.is_empty() {
-            let path = t
-              .example
-              .iter()
-              .map(|&e| net.transition_label(e))
-              .collect::<Vec<_>>()
-              .join(" → ");
-            ui.label("");
-            ui.weak(format!("ruta: {path}"));
-            ui.end_row();
-          }
+    for t in &behavior.liveness {
+      ui.horizontal_wrapped(|ui| {
+        ui.strong(net.transition_label(t.transition));
+        let (icon_name, color) = liveness_icon(t.level);
+        status_badge(ui, icon_name, liveness_label(t.level), color);
+        if !behavior.precise {
+          status_badge(ui, "triangle-alert", "aprox.", ui.visuals().warn_fg_color);
         }
       });
-    ui.add_space(12.0);
+      if !t.example.is_empty() {
+        let path = t
+          .example
+          .iter()
+          .map(|&e| net.transition_label(e))
+          .collect::<Vec<_>>()
+          .join(" → ");
+        ui.weak(format!("ruta: {path}"));
+        if ui.button("Ver ruta").clicked() {
+          let states = analysis::replay_path(net, &net.marking(), &t.example);
+          *route_modal = Some(crate::route_modal::RouteModal::new(net, states, t.example.clone()));
+        }
+      }
+      ui.add_space(6.0);
+    }
+    ui.add_space(6.0);
     ui.separator();
     ui.add_space(10.0);
 
@@ -147,7 +148,7 @@ impl PropertiesState {
       ui.label(if behavior.reversible {
         "Reversible: siempre se puede volver al marking inicial"
       } else {
-        "No reversible — pero siempre se puede volver a alguno de estos home states"
+        "No reversible, pero siempre se puede volver a alguno de estos home states"
       });
       if !behavior.precise {
         status_badge(ui, "triangle-alert", "aprox.", ui.visuals().warn_fg_color);
@@ -165,7 +166,64 @@ impl PropertiesState {
       ui.weak("Home states conocidos (puede haber más, net no acotado)");
     }
     for home in &behavior.home_states {
-      ui.label(format!("• {}", marking_text(net, home)));
+      marking_chips(ui, net, home);
+      if let Some((states, transitions)) = analysis::path_to(net, &net.marking(), home)
+        && !transitions.is_empty()
+        && ui.button("Ver ruta").clicked()
+      {
+        *route_modal = Some(crate::route_modal::RouteModal::new(net, states, transitions));
+      }
+      ui.add_space(4.0);
+    }
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(10.0);
+
+    section_label(ui, "Deadlocks");
+    ui.add_space(6.0);
+    if behavior.deadlocks.is_empty() {
+      ui.horizontal_wrapped(|ui| {
+        ui.label(icons::icon("check", 13.0).color(crate::theme::success()));
+        ui.label("Sin deadlocks conocidos");
+        if !behavior.precise {
+          status_badge(ui, "triangle-alert", "aprox.", ui.visuals().warn_fg_color);
+        }
+      });
+    } else {
+      if !behavior.precise {
+        ui.horizontal_wrapped(|ui| {
+          ui.label(icons::icon("triangle-alert", 14.0).color(ui.visuals().warn_fg_color));
+          ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Net no acotado: puede haber falsos positivos si hay arcos de inhibición sobre \
+             un lugar no acotado.",
+          );
+        });
+        ui.add_space(8.0);
+      }
+      for d in &behavior.deadlocks {
+        ui.horizontal_wrapped(|ui| {
+          ui.label(icons::icon("ban", 13.0).color(crate::theme::danger()));
+          ui.strong("Deadlock");
+        });
+        if !d.example.is_empty() {
+          let path = d
+            .example
+            .iter()
+            .map(|&e| net.transition_label(e))
+            .collect::<Vec<_>>()
+            .join(" → ");
+          ui.weak(format!("ruta: {path}"));
+        }
+        if ui.button("Ver ruta").clicked() {
+          *route_modal = Some(crate::route_modal::RouteModal::new(
+            net,
+            d.states.clone(),
+            d.example.clone(),
+          ));
+        }
+        ui.add_space(8.0);
+      }
     }
   }
 }

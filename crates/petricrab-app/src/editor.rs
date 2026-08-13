@@ -520,11 +520,38 @@ fn draw_net(
   let arc_stroke = egui::Stroke::new(1.2, theme::text_weak());
   let accent = visuals.selection.bg_fill;
 
+  // While replaying a route, everything not on it fades out so the recorded path reads as the
+  // highlight against real context, instead of a same-weight diagram.
+  let route = app.route_modal.as_ref();
+  let dim = |c: egui::Color32| c.gamma_multiply(0.28);
+  let place_dimmed = |p: crate::model::PlaceId| route.is_some_and(|r| !r.route_places().contains(&p));
+  let transition_dimmed =
+    |t: crate::model::TransitionId| route.is_some_and(|r| !r.route_transitions().contains(&t));
+  let current_t = route.and_then(|r| r.current_transition());
+  let visited_transitions = route.map(|r| r.visited_transitions()).unwrap_or_default();
+  // The transition about to fire: inputs (what it's about to consume) in orange, outputs (what
+  // it's about to produce) in cyan, thicker than every other arc. Transitions already fired on
+  // the way here stay green.
+  let route_in_stroke = egui::Stroke::new(2.4, egui::Color32::from_rgb(237, 137, 54));
+  let route_out_stroke = egui::Stroke::new(2.4, egui::Color32::from_rgb(94, 202, 232));
+  let visited_stroke = egui::Stroke::new(1.8, theme::success());
+
   // Arcs (under nodes).
   for t in app.net.transition_ids() {
     let t_pos = node_pos(app, NodeId::Transition(t), fallback);
+    let t_dim = transition_dimmed(t);
+    let is_current = Some(t) == current_t;
     for &(p, kind) in app.net.inputs(t) {
       let p_pos = node_pos(app, NodeId::Place(p), fallback);
+      let stroke = if is_current {
+        route_in_stroke
+      } else if visited_transitions.contains(&t) {
+        visited_stroke
+      } else if t_dim || place_dimmed(p) {
+        egui::Stroke::new(arc_stroke.width, dim(arc_stroke.color))
+      } else {
+        arc_stroke
+      };
       draw_arc(
         app,
         painter,
@@ -535,7 +562,7 @@ fn draw_net(
         arc_end_for_kind(kind),
         kind.weight(),
         is_reciprocal(&app.net, p, t),
-        arc_stroke,
+        stroke,
         pan,
         zoom,
         visuals.extreme_bg_color,
@@ -543,6 +570,15 @@ fn draw_net(
     }
     for &(p, weight) in app.net.outputs(t) {
       let p_pos = node_pos(app, NodeId::Place(p), fallback);
+      let stroke = if is_current {
+        route_out_stroke
+      } else if visited_transitions.contains(&t) {
+        visited_stroke
+      } else if t_dim || place_dimmed(p) {
+        egui::Stroke::new(arc_stroke.width, dim(arc_stroke.color))
+      } else {
+        arc_stroke
+      };
       draw_arc(
         app,
         painter,
@@ -553,7 +589,7 @@ fn draw_net(
         ArcEnd::Arrow,
         weight,
         is_reciprocal(&app.net, p, t),
-        arc_stroke,
+        stroke,
         pan,
         zoom,
         visuals.extreme_bg_color,
@@ -575,24 +611,40 @@ fn draw_net(
     }
   }
 
+  // The transition about to fire in a route replay gets the same halo treatment, so it stands
+  // out from the rest of the (already brighter-than-dimmed) route.
+  if let Some(t) = route.and_then(|r| r.current_transition()) {
+    draw_selection_halo(
+      app,
+      painter,
+      NodeId::Transition(t),
+      s(node_pos(app, NodeId::Transition(t), fallback)),
+      zoom,
+      theme::accent(),
+    );
+  }
+
   // Places: same fill as the canvas itself, just a thin crisp ring. Token dots are the only
   // solid white in the shape.
   for p in app.net.place_ids() {
     let pos = s(node_pos(app, NodeId::Place(p), fallback));
+    let dimmed = place_dimmed(p);
     let fill = app.colors.get(&p).copied().unwrap_or(theme::ink());
     painter.circle_filled(pos, PLACE_RADIUS * zoom, fill);
-    painter.circle_stroke(
-      pos,
-      PLACE_RADIUS * zoom,
-      egui::Stroke::new(1.4 * zoom, theme::text()),
-    );
+    let ring = if dimmed { dim(theme::text()) } else { theme::text() };
+    painter.circle_stroke(pos, PLACE_RADIUS * zoom, egui::Stroke::new(1.4 * zoom, ring));
     draw_tokens(painter, pos, app.net.tokens(p), zoom, contrasting_on(fill));
+    let label_color = if dimmed {
+      dim(visuals.weak_text_color())
+    } else {
+      visuals.weak_text_color()
+    };
     painter.text(
       pos + egui::vec2(0.0, (PLACE_RADIUS + 12.0) * zoom),
       egui::Align2::CENTER_CENTER,
       app.net.place_label(p),
       egui::FontId::proportional(12.0 * zoom),
-      visuals.weak_text_color(),
+      label_color,
     );
   }
 
@@ -601,7 +653,10 @@ fn draw_net(
   for t in app.net.transition_ids() {
     let pos = s(node_pos(app, NodeId::Transition(t), fallback));
     let angle = transition_angle(app, t);
-    let fill = if enabled.contains(&t) {
+    let dimmed = transition_dimmed(t);
+    let fill = if dimmed {
+      dim(theme::text_weak())
+    } else if enabled.contains(&t) {
       theme::success()
     } else {
       theme::text_weak()
@@ -620,12 +675,17 @@ fn draw_net(
       ));
       points.iter().map(|c| c.y).fold(f32::MIN, f32::max)
     };
+    let label_color = if dimmed {
+      dim(visuals.weak_text_color())
+    } else {
+      visuals.weak_text_color()
+    };
     painter.text(
       egui::pos2(pos.x, label_y + 12.0 * zoom),
       egui::Align2::CENTER_CENTER,
       app.net.transition_label(t),
       egui::FontId::proportional(12.0 * zoom),
-      visuals.weak_text_color(),
+      label_color,
     );
   }
 
@@ -706,7 +766,7 @@ fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f3
       note.size * zoom,
     );
     let selected = app.selection == Selection::Note(id);
-    painter.rect_filled(rect, 6.0 * zoom, theme::surface_raised());
+    painter.rect_filled(rect, 6.0 * zoom, note.color.unwrap_or(theme::surface_raised()));
     painter.rect_stroke(
       rect,
       6.0 * zoom,
@@ -721,7 +781,7 @@ fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f3
       egui::StrokeKind::Outside,
     );
 
-    if !selected {
+    if app.editing_note != Some(id) {
       let text_rect = rect.shrink(8.0 * zoom);
       let (display, color): (&str, egui::Color32) = if note.text.is_empty() {
         ("Nota vacía…", theme::text_weak())
@@ -753,11 +813,12 @@ fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f3
   }
 }
 
-/// Places an actual editable `TextEdit` over the selected note, if any — the only way to type
-/// directly on the canvas instead of only through the Selection tab (`painter.text` can't be
-/// interactive). Called after `draw_notes` so it visually sits on top.
+/// Places an actual editable `TextEdit` over the note being edited, if any — the only way to
+/// type directly on the canvas instead of only through the Selection tab (`painter.text` can't
+/// be interactive). Called after `draw_notes` so it visually sits on top. A single click only
+/// selects a note (see `handle_click`); this only shows once `app.editing_note` says so.
 fn note_edit_overlay(app: &mut PetriApp, ui: &mut egui::Ui, pan: egui::Vec2, zoom: f32) {
-  let Selection::Note(id) = app.selection else {
+  let Some(id) = app.editing_note else {
     return;
   };
   let Some(note) = app.notes.get_mut(id) else {
@@ -918,6 +979,9 @@ fn delete_selected(app: &mut PetriApp) {
 /// `pos` is in world space.
 fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
   let hit = hit_test(app, pos);
+  // Any click that isn't "on the note already open for editing" (see the `Select` arm below,
+  // the only branch that can re-set this) ends that note's edit session.
+  app.editing_note = None;
   match app.mode {
     EditMode::AddPlace => {
       if hit.is_none() {
@@ -942,8 +1006,10 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
           pos: pos - size / 2.0,
           size,
           text: String::new(),
+          color: None,
         });
         app.selection = Selection::Note(id);
+        app.editing_note = Some(id);
       }
     }
     EditMode::Connect => match hit {
@@ -956,6 +1022,9 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
     EditMode::Select => {
       if let Some(note_id) = note_hit_test(app, pos) {
         app.selection = Selection::Note(note_id);
+        if app.reselecting_note {
+          app.editing_note = Some(note_id);
+        }
         return;
       }
       match hit {
@@ -994,42 +1063,51 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
   }
   draw_net(app, &painter, fallback, pan, zoom, &visuals);
   draw_notes(app, &painter, pan, zoom, &visuals);
-  note_edit_overlay(app, ui, pan, zoom);
 
-  if app.mode == EditMode::Connect {
-    if let Some(from) = app.connect_from {
-      if let Some(mouse) = response.hover_pos() {
-        draw_connect_preview(
-          app,
-          &painter,
-          from,
-          to_world(mouse, pan, zoom),
-          fallback,
-          pan,
-          zoom,
-          &visuals,
-        );
+  // Route replay: `RouteModal::show` overwrites the live marking every frame so `draw_net`
+  // above shows tokens moving along the recorded path (and dims everything off it). Editing,
+  // selecting and note-editing are suspended while that's driving the canvas — pan/zoom below
+  // stay on, so you can still look around.
+  let editable = app.route_modal.is_none();
+
+  if editable {
+    note_edit_overlay(app, ui, pan, zoom);
+
+    if app.mode == EditMode::Connect {
+      if let Some(from) = app.connect_from {
+        if let Some(mouse) = response.hover_pos() {
+          draw_connect_preview(
+            app,
+            &painter,
+            from,
+            to_world(mouse, pan, zoom),
+            fallback,
+            pan,
+            zoom,
+            &visuals,
+          );
+        }
       }
     }
-  }
 
-  if let (Some(start), Some(current)) = (app.marquee_start, app.marquee_current) {
-    for node in nodes_in_rect(app, egui::Rect::from_two_pos(start, current)) {
-      draw_selection_halo(
-        app,
+    if let (Some(start), Some(current)) = (app.marquee_start, app.marquee_current) {
+      for node in nodes_in_rect(app, egui::Rect::from_two_pos(start, current)) {
+        draw_selection_halo(
+          app,
+          &painter,
+          node,
+          to_screen(node_pos(app, node, fallback), pan, zoom),
+          zoom,
+          visuals.selection.bg_fill,
+        );
+      }
+      draw_marquee(
         &painter,
-        node,
-        to_screen(node_pos(app, node, fallback), pan, zoom),
-        zoom,
+        to_screen(start, pan, zoom),
+        to_screen(current, pan, zoom),
         visuals.selection.bg_fill,
       );
     }
-    draw_marquee(
-      &painter,
-      to_screen(start, pan, zoom),
-      to_screen(current, pan, zoom),
-      visuals.selection.bg_fill,
-    );
   }
 
   // Holding Space turns the primary button into a temporary pan grab. Node dragging,
@@ -1078,7 +1156,7 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
     });
   }
 
-  if !space_held {
+  if !space_held && editable {
     if response.drag_started() {
       if let Some(pos) = response.interact_pointer_pos() {
         let world = to_world(pos, pan, zoom);
@@ -1087,6 +1165,7 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
           app.selection = Selection::Note(note_id);
         } else if let Some(note_id) = note_hit_test(app, world) {
           app.dragging_note = Some(note_id);
+          app.reselecting_note = app.selection == Selection::Note(note_id);
           app.selection = Selection::Note(note_id);
         } else {
           app.dragging = hit_test(app, world);
@@ -1160,54 +1239,56 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
   // Right-click: figure out what was under the pointer once, on the click itself. The menu
   // stays open while the pointer wanders off the canvas, so recomputing the hit-test every
   // frame would lose the target the moment the mouse left.
-  if response.secondary_clicked() {
-    if let Some(pos) = response.interact_pointer_pos() {
-      let world = to_world(pos, pan, zoom);
-      let target = hit_test(app, world)
-        .map(ContextTarget::Node)
-        .unwrap_or_else(|| match hit_test_arc(app, world) {
-          Some(Selection::ArcIn(p, t)) => ContextTarget::ArcIn(p, t),
-          Some(Selection::ArcOut(t, p)) => ContextTarget::ArcOut(t, p),
-          _ => ContextTarget::Empty(world),
-        });
-      // Right-clicking an item also selects it, so the inspector panel on the right stays in
-      // sync with whatever the context menu is about to act on.
-      app.selection = match target {
-        ContextTarget::Node(node) => Selection::Nodes(HashSet::from([node])),
-        ContextTarget::ArcIn(p, t) => Selection::ArcIn(p, t),
-        ContextTarget::ArcOut(t, p) => Selection::ArcOut(t, p),
-        ContextTarget::Empty(_) => Selection::None,
-      };
-      app.context_target = Some(target);
+  if editable {
+    if response.secondary_clicked() {
+      if let Some(pos) = response.interact_pointer_pos() {
+        let world = to_world(pos, pan, zoom);
+        let target = hit_test(app, world)
+          .map(ContextTarget::Node)
+          .unwrap_or_else(|| match hit_test_arc(app, world) {
+            Some(Selection::ArcIn(p, t)) => ContextTarget::ArcIn(p, t),
+            Some(Selection::ArcOut(t, p)) => ContextTarget::ArcOut(t, p),
+            _ => ContextTarget::Empty(world),
+          });
+        // Right-clicking an item also selects it, so the inspector panel on the right stays in
+        // sync with whatever the context menu is about to act on.
+        app.selection = match target {
+          ContextTarget::Node(node) => Selection::Nodes(HashSet::from([node])),
+          ContextTarget::ArcIn(p, t) => Selection::ArcIn(p, t),
+          ContextTarget::ArcOut(t, p) => Selection::ArcOut(t, p),
+          ContextTarget::Empty(_) => Selection::None,
+        };
+        app.context_target = Some(target);
+      }
     }
-  }
-  response.context_menu(|ui| context_menu_contents(app, ui));
+    response.context_menu(|ui| context_menu_contents(app, ui));
 
-  let no_focus = ui.memory(|m| m.focused().is_none());
-  if no_focus {
-    let delete_pressed =
-      ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
-    if delete_pressed && !matches!(app.selection, Selection::None) {
-      delete_selected(app);
+    let no_focus = ui.memory(|m| m.focused().is_none());
+    if no_focus {
+      let delete_pressed =
+        ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+      if delete_pressed && !matches!(app.selection, Selection::None) {
+        delete_selected(app);
+      }
+
+      ui.input(|i| {
+        if i.key_pressed(egui::Key::V) {
+          apply_mode(app, EditMode::Select);
+        }
+        if i.key_pressed(egui::Key::P) {
+          apply_mode(app, EditMode::AddPlace);
+        }
+        if i.key_pressed(egui::Key::T) {
+          apply_mode(app, EditMode::AddTransition);
+        }
+        if i.key_pressed(egui::Key::C) {
+          apply_mode(app, EditMode::Connect);
+        }
+        if i.key_pressed(egui::Key::N) {
+          apply_mode(app, EditMode::AddNote);
+        }
+      });
     }
-
-    ui.input(|i| {
-      if i.key_pressed(egui::Key::V) {
-        apply_mode(app, EditMode::Select);
-      }
-      if i.key_pressed(egui::Key::P) {
-        apply_mode(app, EditMode::AddPlace);
-      }
-      if i.key_pressed(egui::Key::T) {
-        apply_mode(app, EditMode::AddTransition);
-      }
-      if i.key_pressed(egui::Key::C) {
-        apply_mode(app, EditMode::Connect);
-      }
-      if i.key_pressed(egui::Key::N) {
-        apply_mode(app, EditMode::AddNote);
-      }
-    });
   }
 }
 
@@ -1612,6 +1693,7 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
       ui.label(icons::icon("workflow", 16.0).color(theme::accent()));
       ui.add_space(2.0);
       ui.label(egui::RichText::new("petricrab").strong().size(14.0));
+      ui.weak(concat!("v", env!("CARGO_PKG_VERSION")));
     });
     ui.add_space(12.0);
     ui.separator();
@@ -2105,6 +2187,29 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
             .hint_text("Escribí lo que quieras…"),
         );
       }
+      ui.add_space(10.0);
+      ui.horizontal(|ui| {
+        ui.label("Color");
+        let mut color = app
+          .notes
+          .get(id)
+          .and_then(|n| n.color)
+          .unwrap_or(theme::surface_raised());
+        if ui.color_edit_button_srgba(&mut color).changed()
+          && let Some(note) = app.notes.get_mut(id)
+        {
+          note.color = Some(color);
+        }
+        if app.notes.get(id).is_some_and(|n| n.color.is_some())
+          && ui
+            .add(egui::Button::new(icons::icon("rotate-ccw", 13.0)).frame(false))
+            .on_hover_text("Restablecer color")
+            .clicked()
+          && let Some(note) = app.notes.get_mut(id)
+        {
+          note.color = None;
+        }
+      });
       ui.add_space(14.0);
       if destructive_button(ui, "Eliminar").clicked() {
         delete_selected(app);
@@ -2215,8 +2320,31 @@ pub(crate) fn token_chip(ui: &mut egui::Ui, place_label: &str, tokens: u32) {
     .corner_radius(10.0)
     .inner_margin(egui::Margin::symmetric(8, 3))
     .show(ui, |ui| {
-      ui.label(egui::RichText::new(format!("{place_label}  {tokens}")).monospace());
+      // Extend, not the `horizontal_wrapped` default Wrap: otherwise long text wraps letter by
+      // letter inside the chip instead of the whole chip moving to the next row.
+      ui.add(
+        egui::Label::new(egui::RichText::new(format!("{place_label}  {tokens}")).monospace())
+          .wrap_mode(egui::TextWrapMode::Extend),
+      );
     });
+}
+
+/// One chip per marked place, wrapped onto new rows as needed. The one place that renders a
+/// full `Marking` as chips instead of a flat comma-joined string, so each label/count pair stays
+/// visually paired even when it wraps.
+pub(crate) fn marking_chips(ui: &mut egui::Ui, net: &crate::model::PetriNet, marking: &crate::model::Marking) {
+  ui.horizontal_wrapped(|ui| {
+    let mut any = false;
+    for (&place, &tokens) in marking.iter() {
+      if tokens > 0 {
+        any = true;
+        token_chip(ui, net.place_label(place), tokens);
+      }
+    }
+    if !any {
+      ui.weak("(vacío)");
+    }
+  });
 }
 
 /// Step-through simulator: shows the live net's current marking as token chips, its enabled
@@ -2273,19 +2401,7 @@ pub fn simulate_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
   section_label(ui, "Marking");
   ui.add_space(6.0);
   card(ui, |ui| {
-    let has_tokens = app.net.place_ids().any(|p| app.net.tokens(p) > 0);
-    if has_tokens {
-      ui.horizontal_wrapped(|ui| {
-        for p in app.net.place_ids() {
-          let tokens = app.net.tokens(p);
-          if tokens > 0 {
-            token_chip(ui, app.net.place_label(p), tokens);
-          }
-        }
-      });
-    } else {
-      ui.weak("(vacío)");
-    }
+    marking_chips(ui, &app.net, &app.net.marking());
   });
   ui.add_space(12.0);
 

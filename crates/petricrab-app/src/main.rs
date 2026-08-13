@@ -7,6 +7,7 @@ mod model;
 mod project;
 mod properties_panel;
 mod reachability_panel;
+mod route_modal;
 mod theme;
 
 fn main() -> eframe::Result<()> {
@@ -16,7 +17,9 @@ fn main() -> eframe::Result<()> {
       // Without an explicit size, the window opens at the OS default then egui immediately
       // resizes it to fit content on frame 1 — that jump can read as "window closed and
       // reopened" rather than a resize.
-      viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]),
+      viewport: eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_title(concat!("petricrab v", env!("CARGO_PKG_VERSION"))),
       ..Default::default()
     },
     Box::new(|cc| {

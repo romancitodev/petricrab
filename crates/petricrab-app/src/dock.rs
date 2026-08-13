@@ -70,14 +70,17 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
   fn ui(&mut self, ui: &mut egui::Ui, tab: &mut DockTab) {
     match tab {
       DockTab::Reachability => {
+        let net = &self.app.net;
+        let route_modal = &mut self.app.route_modal;
         if let Some(reachability) = &mut self.app.reachability {
-          reachability.show(ui, &self.app.net);
+          reachability.show(ui, net, route_modal);
         }
       }
       DockTab::Properties => {
         let net = &self.app.net;
+        let route_modal = &mut self.app.route_modal;
         if let Some(properties) = &mut self.app.properties {
-          egui::ScrollArea::vertical().show(ui, |ui| properties.show(ui, net));
+          egui::ScrollArea::vertical().show(ui, |ui| properties.show(ui, net, route_modal));
         }
       }
       DockTab::Outline => crate::editor::outline_panel(self.app, ui),

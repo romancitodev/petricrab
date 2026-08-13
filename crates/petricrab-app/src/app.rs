@@ -24,6 +24,8 @@ pub struct NoteData {
   pub pos: egui::Pos2,
   pub size: egui::Vec2,
   pub text: String,
+  /// `None` falls back to the theme's default note fill.
+  pub color: Option<egui::Color32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -78,6 +80,15 @@ pub struct PetriApp {
   pub dragging_note: Option<NoteId>,
   /// Set while the corner resize handle of a note is being dragged (see `editor::canvas`).
   pub resizing_note: Option<NoteId>,
+  /// The note whose text is live-editable right now (see `editor::note_edit_overlay`). Distinct
+  /// from `Selection::Note`: a single click only selects/focuses a note, a second click on an
+  /// already-selected note is what opens it for typing.
+  pub editing_note: Option<NoteId>,
+  /// Snapshot of "was this note already selected" taken the instant a press on it starts (see
+  /// `editor::canvas`'s `drag_started` handling), since by the time the click resolves,
+  /// `selection` has already been eagerly set to that same note either way. `handle_click` reads
+  /// this to tell a fresh click (focus only) from a click on an already-selected note (edit).
+  pub reselecting_note: bool,
   pub mode: EditMode,
   pub connect_from: Option<NodeId>,
   pub dragging: Option<NodeId>,
@@ -122,6 +133,9 @@ pub struct PetriApp {
   /// Toasts queued via [`PetriApp::notify`], drained into an `egui_toast::Toasts` and shown
   /// once per frame in `ui()`.
   pub toast_queue: Vec<egui_toast::Toast>,
+  /// Set from the "Ver ruta" button on a deadlock; drawn as a blocking `egui::Modal` in `ui()`
+  /// (unlike `simulate_open`'s free-form popup, this one locks input to its own step-through).
+  pub route_modal: Option<crate::route_modal::RouteModal>,
 }
 
 impl PetriApp {
@@ -135,6 +149,8 @@ impl PetriApp {
       notes: slotmap::SlotMap::default(),
       dragging_note: None,
       resizing_note: None,
+      editing_note: None,
+      reselecting_note: false,
       mode: EditMode::Select,
       connect_from: None,
       dragging: None,
@@ -159,6 +175,7 @@ impl PetriApp {
       sim_history: Vec::new(),
       sim_future: Vec::new(),
       toast_queue: Vec::new(),
+      route_modal: None,
     }
   }
 
@@ -327,6 +344,16 @@ impl eframe::App for PetriApp {
               editor::simulate_panel(self, ui);
             });
         });
+    }
+
+    // Taken out (not just `&mut self.route_modal`) so `show` can take `&mut self` itself — it
+    // needs the whole app (net, pan, canvas_rect) to drive the canvas and follow the camera.
+    if let Some(mut route_modal) = self.route_modal.take() {
+      if route_modal.show(&ctx, self) {
+        self.route_modal = Some(route_modal);
+      } else {
+        route_modal.close(&mut self.net);
+      }
     }
   }
 }
