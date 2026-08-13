@@ -34,6 +34,10 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Ubuntu leg shares CI's cache (see ci.yml); Windows/macOS still start cold the first
+          # time since ci.yml never builds those, but subsequent releases reuse their own.
+          shared-key: rust
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-latest'

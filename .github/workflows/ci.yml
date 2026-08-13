@@ -15,4 +15,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared with release.yml's ubuntu leg (its default key includes the job name — "test"
+          # here vs "build" there — which would otherwise never overlap).
+          shared-key: rust
       - run: cargo test --workspace
