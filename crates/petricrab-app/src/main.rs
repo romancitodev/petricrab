@@ -1,3 +1,8 @@
+// Windows only, no-op elsewhere: a debug build keeps the console (so println!/panics stay
+// visible while developing), a release build drops it, so launching the .exe doesn't pop a
+// terminal behind the window.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod analysis;
 mod app;
 mod dock;
@@ -10,7 +15,25 @@ mod reachability_panel;
 mod route_modal;
 mod theme;
 
+/// Logs to `petricrab.log` next to the executable (append mode, so a previous crash's entries
+/// survive until you go looking for them) instead of a console, which release builds no longer
+/// open. Also routes panics through the same log via `log_panics`, so a crash leaves a trace
+/// instead of just vanishing.
+fn init_logging() {
+  let log_path = std::env::current_exe()
+    .ok()
+    .and_then(|exe| exe.parent().map(|dir| dir.join("petricrab.log")))
+    .unwrap_or_else(|| std::path::PathBuf::from("petricrab.log"));
+
+  if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+    let _ = simplelog::WriteLogger::init(simplelog::LevelFilter::Info, simplelog::Config::default(), file);
+  }
+  log_panics::init();
+  log::info!("petricrab v{} starting, log: {}", env!("CARGO_PKG_VERSION"), log_path.display());
+}
+
 fn main() -> eframe::Result<()> {
+  init_logging();
   eframe::run_native(
     "petricrab",
     eframe::NativeOptions {

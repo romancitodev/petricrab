@@ -1,0 +1,43 @@
+[changelog]
+header = """
+# Changelog
+
+Generado automáticamente con [git-cliff](https://git-cliff.org/) a partir de los mensajes de commit.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+# Los commits empiezan con un emoji (gitmoji) antes del tipo convencional, ej. "✨ feat: ...".
+# Se lo saca acá para que los parsers de abajo matcheen "feat"/"fix"/etc. normalmente.
+commit_preprocessors = [{ pattern = '^\S+\s+', replace = "" }]
+commit_parsers = [
+  { message = "^feat", group = "✨ Features" },
+  { message = "^fix", group = "🐛 Fixes" },
+  { message = "^docs", group = "📝 Documentation" },
+  { message = "^perf", group = "⚡ Performance" },
+  { message = "^refactor", group = "♻️ Refactor" },
+  { message = "^test", group = "✅ Tests" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "🔧 Chores" },
+  { message = "^ci", group = "👷 CI" },
+  { message = "^style", group = "🎨 Style" },
+  { message = ".*", group = "Otros" },
+]
+filter_commits = false
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"

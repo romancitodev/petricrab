@@ -29,6 +29,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # git-cliff needs the full commit/tag history, not just the tip, to build the changelog.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -42,6 +45,16 @@ jobs:
 
       - run: cp target/release/${{ matrix.artifact }} ${{ matrix.asset_name }}
 
+      - name: Generate changelog for this tag
+        uses: orhun/git-cliff-action@v4
+        id: changelog
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset_name }}
+          body_path: CHANGES.md

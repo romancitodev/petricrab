@@ -1615,6 +1615,7 @@ fn open_path(app: &mut PetriApp, path: std::path::PathBuf) {
       app.notes = loaded.notes;
       app.next_place_n = loaded.next_place_n;
       app.next_transition_n = loaded.next_transition_n;
+      log::info!("opened project: {}", path.display());
       app.notify(
         egui_toast::ToastKind::Success,
         format!("Abierto: {}", file_display_name(&path)),
@@ -1622,10 +1623,13 @@ fn open_path(app: &mut PetriApp, path: std::path::PathBuf) {
       remember_recent(app, path.clone());
       app.file_path = Some(path);
     }
-    Err(e) => app.notify(
-      egui_toast::ToastKind::Error,
-      format!("No se pudo abrir el proyecto: {e}"),
-    ),
+    Err(e) => {
+      log::error!("failed to open project {}: {e}", path.display());
+      app.notify(
+        egui_toast::ToastKind::Error,
+        format!("No se pudo abrir el proyecto: {e}"),
+      );
+    }
   }
 }
 
@@ -1649,6 +1653,7 @@ fn file_save_as(app: &mut PetriApp) {
   };
   match crate::project::save(app, &path) {
     Ok(()) => {
+      log::info!("saved project: {}", path.display());
       app.notify(
         egui_toast::ToastKind::Success,
         format!("Guardado: {}", file_display_name(&path)),
@@ -1656,10 +1661,13 @@ fn file_save_as(app: &mut PetriApp) {
       remember_recent(app, path.clone());
       app.file_path = Some(path);
     }
-    Err(e) => app.notify(
-      egui_toast::ToastKind::Error,
-      format!("No se pudo guardar el proyecto: {e}"),
-    ),
+    Err(e) => {
+      log::error!("failed to save project {}: {e}", path.display());
+      app.notify(
+        egui_toast::ToastKind::Error,
+        format!("No se pudo guardar el proyecto: {e}"),
+      );
+    }
   }
 }
 
@@ -1667,16 +1675,20 @@ fn file_save(app: &mut PetriApp) {
   match app.file_path.clone() {
     Some(path) => match crate::project::save(app, &path) {
       Ok(()) => {
+        log::info!("saved project: {}", path.display());
         app.notify(
           egui_toast::ToastKind::Success,
           format!("Guardado: {}", file_display_name(&path)),
         );
         remember_recent(app, path);
       }
-      Err(e) => app.notify(
-        egui_toast::ToastKind::Error,
-        format!("No se pudo guardar el proyecto: {e}"),
-      ),
+      Err(e) => {
+        log::error!("failed to save project {}: {e}", path.display());
+        app.notify(
+          egui_toast::ToastKind::Error,
+          format!("No se pudo guardar el proyecto: {e}"),
+        );
+      }
     },
     None => file_save_as(app),
   }
