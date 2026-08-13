@@ -2534,14 +2534,14 @@ dependencies = [
 
 [[package]]
 name = "petricrab"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "petricrab-core",
 ]
 
 [[package]]
 name = "petricrab-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui-toast",
@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "petricrab-core"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "phf"
