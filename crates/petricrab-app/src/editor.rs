@@ -22,6 +22,12 @@ const INHIBIT_DASH_LEN: f32 = 5.0;
 const INHIBIT_GAP_LEN: f32 = 4.0;
 const NOTE_MIN_SIZE: egui::Vec2 = egui::vec2(90.0, 54.0);
 const NOTE_RESIZE_HANDLE: f32 = 14.0;
+/// Extra clearance (beyond a node's own footprint) an arc tries to keep from any node it's not
+/// actually connecting, before it's considered "in the way" and worth bowing around.
+const ARC_OBSTACLE_PADDING: f32 = 14.0;
+/// World-space arc length past which a straight, unobstructed run still gets a gentle bow — a
+/// dead-straight long line reads as noise on a busy canvas even with nothing in its way.
+const ARC_LONG_THRESHOLD: f32 = 260.0;
 
 /// All node/arc geometry (positions in `PetriApp::positions`, hit-testing, marquee math) lives
 /// in an infinite "world" space. `pan`/`zoom` describe the screen-space view of that world
@@ -203,7 +209,8 @@ fn hit_test_arc(app: &PetriApp, pos: egui::Pos2) -> Option<Selection> {
       let Some(p_pos) = app.positions.get(&NodeId::Place(p)).copied() else {
         continue;
       };
-      if dist_to_arc(pos, p_pos, t_pos, is_reciprocal(&app.net, p, t)) <= ARC_HIT_DIST {
+      let bow = arc_bow(app, p_pos, t_pos, NodeId::Place(p), NodeId::Transition(t));
+      if dist_to_arc(pos, p_pos, t_pos, bow) <= ARC_HIT_DIST {
         return Some(Selection::ArcIn(p, t));
       }
     }
@@ -211,7 +218,8 @@ fn hit_test_arc(app: &PetriApp, pos: egui::Pos2) -> Option<Selection> {
       let Some(p_pos) = app.positions.get(&NodeId::Place(p)).copied() else {
         continue;
       };
-      if dist_to_arc(pos, t_pos, p_pos, is_reciprocal(&app.net, p, t)) <= ARC_HIT_DIST {
+      let bow = arc_bow(app, t_pos, p_pos, NodeId::Transition(t), NodeId::Place(p));
+      if dist_to_arc(pos, t_pos, p_pos, bow) <= ARC_HIT_DIST {
         return Some(Selection::ArcOut(t, p));
       }
     }
@@ -251,17 +259,16 @@ fn draw_grid(painter: &egui::Painter, rect: egui::Rect, pan: egui::Vec2, zoom: f
 }
 
 /// World-space quadratic-bezier control point for the arc between two world-space centers.
-/// Straight (`curved == false`) by default. Only a place<->transition pair with arcs running
-/// both directions (`is_reciprocal`) needs the bow, to keep the two from overlapping.
-fn arc_control_point(a: egui::Pos2, b: egui::Pos2, curved: bool) -> egui::Pos2 {
+/// Straight by default; `bow` (world units, signed — which side to bow toward) comes from
+/// `arc_bow`, and moves the control point off the midpoint perpendicular to the line.
+fn arc_control_point(a: egui::Pos2, b: egui::Pos2, bow: f32) -> egui::Pos2 {
   let delta = b - a;
   let len = delta.length();
-  if len < 1.0 || !curved {
+  if len < 1.0 || bow.abs() < 0.5 {
     return a + delta * 0.5;
   }
   let dir = delta / len;
   let normal = egui::vec2(-dir.y, dir.x);
-  let bow = (len * 0.15).min(36.0);
   a + delta * 0.5 + normal * bow
 }
 
@@ -275,9 +282,60 @@ fn is_reciprocal(
     && net.outputs(t).iter().any(|&(place, _)| place == p)
 }
 
+/// How much (and which way) to bow an arc's control point off the straight line between `from`
+/// and `to` (world-space node centers). In order: a straight run that would otherwise cut through
+/// (or too close to) some unrelated node bows away from the worst offender; a reciprocal
+/// place<->transition pair (arcs running both ways) gets a small fixed bow so the two separate
+/// instead of overlapping; a long run with nothing in the way still gets a gentle bow, since a
+/// dead-straight long line reads as noise on a busy canvas; anything else stays straight.
+fn arc_bow(app: &PetriApp, from: egui::Pos2, to: egui::Pos2, from_node: NodeId, to_node: NodeId) -> f32 {
+  let delta = to - from;
+  let len = delta.length();
+  if len < 1.0 {
+    return 0.0;
+  }
+  let dir = delta / len;
+  let normal = egui::vec2(-dir.y, dir.x);
+
+  let obstruction = app
+    .positions
+    .iter()
+    .filter(|&(&node, _)| node != from_node && node != to_node)
+    .filter_map(|(&node, &pos)| {
+      let radius = match node {
+        NodeId::Place(_) => PLACE_RADIUS,
+        NodeId::Transition(_) => T_HALF_H,
+      } + ARC_OBSTACLE_PADDING;
+      let penetration = radius - dist_to_segment(pos, from, to);
+      (penetration > 0.0).then_some((penetration, (pos - from).dot(normal).signum()))
+    })
+    .max_by(|a, b| a.0.total_cmp(&b.0));
+
+  if let Some((penetration, side)) = obstruction {
+    let side = if side == 0.0 { 1.0 } else { side };
+    return (-side * (penetration * 2.0 + 10.0)).clamp(-len * 0.4, len * 0.4);
+  }
+
+  let reciprocal = match (from_node, to_node) {
+    (NodeId::Place(p), NodeId::Transition(t)) | (NodeId::Transition(t), NodeId::Place(p)) => {
+      is_reciprocal(&app.net, p, t)
+    }
+    _ => false,
+  };
+  if reciprocal {
+    return (len * 0.15).min(36.0);
+  }
+
+  if len > ARC_LONG_THRESHOLD {
+    return (len * 0.1).min(28.0);
+  }
+
+  0.0
+}
+
 /// World-space distance from `p` to the curved arc between world-space centers `a`/`b`.
-fn dist_to_arc(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2, curved: bool) -> f32 {
-  let control = arc_control_point(a, b, curved);
+fn dist_to_arc(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2, bow: f32) -> f32 {
+  let control = arc_control_point(a, b, bow);
   let mut prev = a;
   let mut best = f32::INFINITY;
   for i in 1..=ARC_CURVE_SEGMENTS {
@@ -309,7 +367,6 @@ fn draw_arc(
   to_node: NodeId,
   end: ArcEnd,
   weight: u32,
-  curved: bool,
   stroke: egui::Stroke,
   pan: egui::Vec2,
   zoom: f32,
@@ -319,7 +376,7 @@ fn draw_arc(
   if delta.length() < 1.0 {
     return;
   }
-  let control = arc_control_point(from, to, curved);
+  let control = arc_control_point(from, to, arc_bow(app, from, to, from_node, to_node));
 
   // Trim the curve to the node boundaries using the direction at each endpoint (tangent for
   // the transition end, straight line for the start; close enough for a subtle bow).
@@ -561,7 +618,6 @@ fn draw_net(
         NodeId::Transition(t),
         arc_end_for_kind(kind),
         kind.weight(),
-        is_reciprocal(&app.net, p, t),
         stroke,
         pan,
         zoom,
@@ -588,7 +644,6 @@ fn draw_net(
         NodeId::Place(p),
         ArcEnd::Arrow,
         weight,
-        is_reciprocal(&app.net, p, t),
         stroke,
         pan,
         zoom,
@@ -711,7 +766,6 @@ fn draw_net(
           NodeId::Transition(t),
           arc_end_for_kind(kind),
           kind.weight(),
-          is_reciprocal(&app.net, p, t),
           egui::Stroke::new(3.0, accent),
           pan,
           zoom,
@@ -739,7 +793,6 @@ fn draw_net(
         NodeId::Place(p),
         ArcEnd::Arrow,
         weight,
-        is_reciprocal(&app.net, p, t),
         egui::Stroke::new(3.0, accent),
         pan,
         zoom,
@@ -876,7 +929,6 @@ fn draw_connect_preview(
         target,
         ArcEnd::Arrow,
         1,
-        false,
         dimmed,
         pan,
         zoom,
