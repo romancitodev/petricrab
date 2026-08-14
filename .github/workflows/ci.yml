@@ -10,13 +10,25 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # Shared with release.yml's ubuntu leg (its default key includes the job name — "test"
-          # here vs "build" there — which would otherwise never overlap).
+          # Shared with release.yml's matching OS leg (its default key includes the job name —
+          # "test" here vs "build" there — which would otherwise never overlap). rust-cache scopes
+          # the actual cache entry by OS on its own, so one shared-key is fine across all three.
           shared-key: rust
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+
       - run: cargo test --workspace
