@@ -158,6 +158,9 @@ pub struct PetriApp {
   pub redo_stack: Vec<editor::Snapshot>,
   /// Last Ctrl+C'd selection, ready for Ctrl+V — see `editor::Clipboard`.
   pub clipboard: Option<editor::Clipboard>,
+  /// World-space spacing `Align::Auto` uses when it distributes a selection along its dominant
+  /// axis. User-adjustable from the "Alinear" section of the multi-select inspector.
+  pub align_gap: f32,
 }
 
 impl PetriApp {
@@ -206,6 +209,7 @@ impl PetriApp {
       undo_stack: Vec::new(),
       redo_stack: Vec::new(),
       clipboard: None,
+      align_gap: 96.0,
     }
   }
 
