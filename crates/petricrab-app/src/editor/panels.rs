@@ -5,7 +5,7 @@ use crate::icons;
 use crate::model::{ArcKind, fire};
 use crate::theme;
 
-use super::align::{Align, align_selected};
+use super::align::{Align, align_selected, beautify};
 use super::canvas::{
   apply_mode, center_on_node, delete_selected, fire_step, reset_sim, step_back, step_forward,
   toggle_simulate,
@@ -550,6 +550,26 @@ pub fn toolbar(app: &mut PetriApp, ui: &mut egui::Ui) {
       if ui.add(button).on_hover_text(tooltip).clicked() {
         apply_mode(app, mode);
       }
+    }
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    let beautify_button = egui::Button::new(icons::icon("sparkles", 17.0))
+      .corner_radius(8.0)
+      .min_size(egui::vec2(38.0, 32.0));
+    let selected = match &app.selection {
+      Selection::Nodes(n) => n.clone(),
+      _ => std::collections::HashSet::new(),
+    };
+    let tooltip = if selected.len() > 1 {
+      "Beautify: reacomoda la selección para que se lea más cómodo"
+    } else {
+      "Beautify: reacomoda todo el net para que se lea más cómodo"
+    };
+    if ui.add(beautify_button).on_hover_text(tooltip).clicked() {
+      beautify(app, &selected);
     }
 
     ui.add_space(6.0);
