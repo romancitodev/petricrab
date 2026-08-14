@@ -34,11 +34,13 @@ impl ArcKind {
   }
 }
 
+#[derive(Clone)]
 struct PlaceData {
   label: String,
   tokens: u32,
 }
 
+#[derive(Clone)]
 struct TransitionData {
   label: String,
   inputs: Vec<(PlaceId, ArcKind)>,
@@ -53,7 +55,9 @@ pub enum ArcError {
   ArcAlreadyExists,
 }
 
-#[derive(Default)]
+/// Undo/redo (see `editor::Snapshot`) and copy/paste clone this wholesale rather than diffing —
+/// ponytail: fine while nets stay editor-sized, revisit with real diffs if that stops holding.
+#[derive(Default, Clone)]
 pub struct PetriNet {
   places: SlotMap<PlaceId, PlaceData>,
   transitions: SlotMap<TransitionId, TransitionData>,
