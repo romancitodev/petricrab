@@ -262,20 +262,20 @@ mod tests {
 
   #[test]
   fn test_dominates() {
-    let a = ExtendedMarking::new(vec![ExtendedToken::Finite(1), ExtendedToken::Omega]);
-    let b = ExtendedMarking::new(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(2)]);
+    let a = ExtendedMarking(vec![ExtendedToken::Finite(1), ExtendedToken::Omega]);
+    let b = ExtendedMarking(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(2)]);
     assert!(a.dominates(&b)); // [1 == 1, omega > N]
 
-    let c = ExtendedMarking::new(vec![ExtendedToken::Finite(2), ExtendedToken::Omega]);
-    let d = ExtendedMarking::new(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(2)]);
+    let c = ExtendedMarking(vec![ExtendedToken::Finite(2), ExtendedToken::Omega]);
+    let d = ExtendedMarking(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(2)]);
     assert!(!d.dominates(&c)); // [2 > 1, omega > N].
 
-    let e = ExtendedMarking::new(vec![
+    let e = ExtendedMarking(vec![
       ExtendedToken::Omega,
       ExtendedToken::Omega,
       ExtendedToken::Finite(3),
     ]);
-    let f = ExtendedMarking::new(vec![
+    let f = ExtendedMarking(vec![
       ExtendedToken::Omega,
       ExtendedToken::Omega,
       ExtendedToken::Finite(1),
@@ -297,7 +297,7 @@ mod tests {
       .add_input(o, ArcKind::Consume(Weight(1)))
       .add_output(h2o, Weight(1));
 
-    let mut marking = ExtendedMarking::new(vec![
+    let mut marking = ExtendedMarking(vec![
       ExtendedToken::Omega,
       ExtendedToken::Finite(2),
       ExtendedToken::Finite(0),
@@ -329,8 +329,7 @@ mod tests {
       .add_input(p1, ArcKind::Consume(Weight(2)))
       .add_output(p2, Weight(1));
 
-    let mut marking =
-      ExtendedMarking::new(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(0)]);
+    let mut marking = ExtendedMarking(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(0)]);
 
     assert!(!fire(&mut marking, &arcs));
     assert_eq!(marking.tokens(p1), ExtendedToken::Finite(1));
@@ -339,8 +338,8 @@ mod tests {
 
   #[test]
   fn test_promote_only_strictly_growing_components_become_omega() {
-    let ancestor = ExtendedMarking::new(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(3)]);
-    let descendant = ExtendedMarking::new(vec![ExtendedToken::Finite(2), ExtendedToken::Finite(3)]);
+    let ancestor = ExtendedMarking(vec![ExtendedToken::Finite(1), ExtendedToken::Finite(3)]);
+    let descendant = ExtendedMarking(vec![ExtendedToken::Finite(2), ExtendedToken::Finite(3)]);
     assert!(descendant.dominates(&ancestor));
 
     let promoted = descendant.promote(&ancestor);

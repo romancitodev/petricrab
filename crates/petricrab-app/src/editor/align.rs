@@ -135,7 +135,8 @@ pub(crate) fn beautify(app: &mut PetriApp, nodes: &HashSet<NodeId>) {
   let cooling = temperature / BEAUTIFY_ITERATIONS as f32;
 
   for _ in 0..BEAUTIFY_ITERATIONS {
-    let mut force: HashMap<NodeId, egui::Vec2> = ids.iter().map(|&n| (n, egui::Vec2::ZERO)).collect();
+    let mut force: HashMap<NodeId, egui::Vec2> =
+      ids.iter().map(|&n| (n, egui::Vec2::ZERO)).collect();
 
     // Repulsion: every pair pushes apart, strength k^2 / distance — this is what keeps
     // unconnected nodes from crowding each other and pries overlapping ones apart.
@@ -147,7 +148,11 @@ pub(crate) fn beautify(app: &mut PetriApp, nodes: &HashSet<NodeId>) {
         // Exactly (or nearly) coincident nodes have no real direction to repel along — a
         // deterministic pseudo-direction from their ids breaks the tie so they still separate
         // instead of the force vector being undefined (NaN from normalizing a zero vector).
-        let dir = if dist < 0.01 { jitter_dir(a, b) } else { delta / dist };
+        let dir = if dist < 0.01 {
+          jitter_dir(a, b)
+        } else {
+          delta / dist
+        };
         let push = dir * (k * k / dist.max(0.01));
         *force.get_mut(&a).expect("a is in ids") += push;
         *force.get_mut(&b).expect("b is in ids") -= push;
@@ -352,7 +357,10 @@ mod tests {
     let b = place_at(&mut app, 10.0, 10.0);
     beautify(&mut app, &HashSet::from([a, b]));
     let dist = (app.positions[&a] - app.positions[&b]).length();
-    assert!(dist > 10.0, "expected the pair to separate, got dist {dist}");
+    assert!(
+      dist > 10.0,
+      "expected the pair to separate, got dist {dist}"
+    );
   }
 
   #[test]
@@ -367,7 +375,12 @@ mod tests {
     link(&mut app, p2, t2);
     link_back(&mut app, t2, p1);
     // All bunched together at the start, like nodes dropped on the same spot.
-    let nodes = [NodeId::Place(p1), NodeId::Transition(t1), NodeId::Place(p2), NodeId::Transition(t2)];
+    let nodes = [
+      NodeId::Place(p1),
+      NodeId::Transition(t1),
+      NodeId::Place(p2),
+      NodeId::Transition(t2),
+    ];
     for (i, &n) in nodes.iter().enumerate() {
       app.positions.insert(n, egui::pos2(i as f32, 0.0));
     }
@@ -377,7 +390,12 @@ mod tests {
     for i in 0..nodes.len() {
       for j in (i + 1)..nodes.len() {
         let dist = (app.positions[&nodes[i]] - app.positions[&nodes[j]]).length();
-        assert!(dist > 20.0, "{:?}-{:?} still overlapping: {dist}", nodes[i], nodes[j]);
+        assert!(
+          dist > 20.0,
+          "{:?}-{:?} still overlapping: {dist}",
+          nodes[i],
+          nodes[j]
+        );
       }
     }
   }
@@ -422,7 +440,9 @@ mod tests {
     let mut sorted_nodes: Vec<NodeId> = nodes.iter().copied().collect();
     sorted_nodes.sort();
     for (i, &n) in sorted_nodes.iter().enumerate() {
-      app.positions.insert(n, egui::pos2((i * 7 % 5) as f32, (i * 3 % 4) as f32));
+      app
+        .positions
+        .insert(n, egui::pos2((i * 7 % 5) as f32, (i * 3 % 4) as f32));
     }
 
     beautify(&mut app, &nodes);
