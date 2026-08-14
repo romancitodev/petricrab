@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::model::{ArcKind, fire};
+use crate::model::{ArcKind, PetriNet, PlaceId, TransitionId, fire};
 use eframe::egui;
 
 use crate::app::{ContextTarget, EditMode, NodeId, PetriApp, Selection};
@@ -39,6 +39,15 @@ fn to_screen(world: egui::Pos2, pan: egui::Vec2, zoom: f32) -> egui::Pos2 {
 
 fn to_world(screen: egui::Pos2, pan: egui::Vec2, zoom: f32) -> egui::Pos2 {
   egui::pos2((screen.x - pan.x) / zoom, (screen.y - pan.y) / zoom)
+}
+
+/// World-space `pos` rounded to the nearest grid intersection (`GRID_SPACING`, the same step
+/// `draw_grid` paints dots at) — used while dragging with Shift held.
+fn snap_to_grid(pos: egui::Pos2) -> egui::Pos2 {
+  egui::pos2(
+    (pos.x / GRID_SPACING).round() * GRID_SPACING,
+    (pos.y / GRID_SPACING).round() * GRID_SPACING,
+  )
 }
 
 #[derive(Clone, Copy)]
@@ -1016,6 +1025,10 @@ fn toggle_simulate(app: &mut PetriApp) {
 }
 
 fn connect(app: &mut PetriApp, from: NodeId, to: NodeId) {
+  if !compatible(from, to) {
+    return;
+  }
+  checkpoint(app);
   let _ = match (from, to) {
     (NodeId::Place(p), NodeId::Transition(t)) => {
       app
@@ -1028,6 +1041,10 @@ fn connect(app: &mut PetriApp, from: NodeId, to: NodeId) {
 }
 
 fn delete_selected(app: &mut PetriApp) {
+  if matches!(app.selection, Selection::None) {
+    return;
+  }
+  checkpoint(app);
   match std::mem::take(&mut app.selection) {
     Selection::Nodes(nodes) => {
       for node in nodes {
@@ -1052,6 +1069,257 @@ fn delete_selected(app: &mut PetriApp) {
   }
 }
 
+/// Everything Ctrl+Z should be able to bring back: the net itself, node positions, transition
+/// rotations, place colors and notes. `undo_stack`/`redo_stack` on `PetriApp` hold these.
+pub(crate) struct Snapshot {
+  net: PetriNet,
+  positions: HashMap<NodeId, egui::Pos2>,
+  rotation: HashMap<TransitionId, f32>,
+  colors: HashMap<PlaceId, egui::Color32>,
+  notes: slotmap::SlotMap<crate::app::NoteId, crate::app::NoteData>,
+}
+
+impl Snapshot {
+  fn capture(app: &PetriApp) -> Self {
+    Self {
+      net: app.net.clone(),
+      positions: app.positions.clone(),
+      rotation: app.rotation.clone(),
+      colors: app.colors.clone(),
+      notes: app.notes.clone(),
+    }
+  }
+
+  fn restore(self, app: &mut PetriApp) {
+    app.net = self.net;
+    app.positions = self.positions;
+    app.rotation = self.rotation;
+    app.colors = self.colors;
+    app.notes = self.notes;
+    app.selection = Selection::None;
+    app.selection_focus = None;
+  }
+}
+
+const MAX_UNDO_STEPS: usize = 100;
+
+/// Saves an undo point capturing the state *before* the mutation that's about to happen, and
+/// drops the redo stack (a fresh edit invalidates whatever redo history there was). Called at
+/// the start of every action that changes the net, positions, rotation, colors or notes — plain
+/// text edits (labels, note text) are the deliberate exception, see the call sites, since
+/// checkpointing every keystroke would make one undo step per character typed.
+fn checkpoint(app: &mut PetriApp) {
+  app.redo_stack.clear();
+  app.undo_stack.push(Snapshot::capture(app));
+  if app.undo_stack.len() > MAX_UNDO_STEPS {
+    app.undo_stack.remove(0);
+  }
+}
+
+fn undo(app: &mut PetriApp) {
+  let Some(prev) = app.undo_stack.pop() else {
+    return;
+  };
+  app.redo_stack.push(Snapshot::capture(app));
+  prev.restore(app);
+}
+
+fn redo(app: &mut PetriApp) {
+  let Some(next) = app.redo_stack.pop() else {
+    return;
+  };
+  app.undo_stack.push(Snapshot::capture(app));
+  next.restore(app);
+}
+
+#[derive(Clone)]
+enum ClipboardNode {
+  Place {
+    label: String,
+    tokens: u32,
+    color: Option<egui::Color32>,
+  },
+  Transition {
+    label: String,
+    rotation: Option<f32>,
+  },
+}
+
+/// A copied selection, ready to paste: the nodes themselves plus the arcs that ran strictly
+/// between two copied nodes. An arc to a node outside the selection is dropped — pasting a
+/// partial subgraph can't recreate a connection to something that wasn't copied. Nodes keep
+/// their original `NodeId` here only so `paste_clipboard` can remap arc endpoints to the freshly
+/// created ids; those ids are otherwise meaningless once copied.
+#[derive(Clone)]
+pub(crate) struct Clipboard {
+  nodes: Vec<(NodeId, ClipboardNode, egui::Pos2)>,
+  arcs_in: Vec<(NodeId, NodeId, ArcKind)>,
+  arcs_out: Vec<(NodeId, NodeId, u32)>,
+}
+
+fn copy_selection(app: &mut PetriApp) {
+  let Selection::Nodes(selected) = &app.selection else {
+    return;
+  };
+  if selected.is_empty() {
+    return;
+  }
+  let selected = selected.clone();
+
+  let mut nodes = Vec::new();
+  for &id in &selected {
+    let Some(&pos) = app.positions.get(&id) else {
+      continue;
+    };
+    let data = match id {
+      NodeId::Place(p) if app.net.place_ids().any(|x| x == p) => ClipboardNode::Place {
+        label: app.net.place_label(p).to_string(),
+        tokens: app.net.tokens(p),
+        color: app.colors.get(&p).copied(),
+      },
+      NodeId::Transition(t) if app.net.transition_ids().any(|x| x == t) => {
+        ClipboardNode::Transition {
+          label: app.net.transition_label(t).to_string(),
+          rotation: app.rotation.get(&t).copied(),
+        }
+      }
+      _ => continue,
+    };
+    nodes.push((id, data, pos));
+  }
+  if nodes.is_empty() {
+    return;
+  }
+
+  let mut arcs_in = Vec::new();
+  let mut arcs_out = Vec::new();
+  for &id in &selected {
+    if let NodeId::Transition(t) = id {
+      for &(p, kind) in app.net.inputs(t) {
+        if selected.contains(&NodeId::Place(p)) {
+          arcs_in.push((NodeId::Place(p), NodeId::Transition(t), kind));
+        }
+      }
+      for &(p, weight) in app.net.outputs(t) {
+        if selected.contains(&NodeId::Place(p)) {
+          arcs_out.push((NodeId::Transition(t), NodeId::Place(p), weight));
+        }
+      }
+    }
+  }
+  app.clipboard = Some(Clipboard {
+    nodes,
+    arcs_in,
+    arcs_out,
+  });
+}
+
+/// World-space offset applied to a pasted selection so it lands next to the original instead of
+/// exactly on top of it.
+const PASTE_OFFSET: egui::Vec2 = egui::vec2(GRID_SPACING, GRID_SPACING);
+
+fn paste_clipboard(app: &mut PetriApp) {
+  let Some(clip) = app.clipboard.clone() else {
+    return;
+  };
+  checkpoint(app);
+
+  let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+  let mut new_selection = HashSet::new();
+  for (old_id, data, pos) in &clip.nodes {
+    let new_id = match data {
+      ClipboardNode::Place {
+        label,
+        tokens,
+        color,
+      } => {
+        app.next_place_n += 1;
+        let id = app.net.add_place(label.clone());
+        app.net.set_tokens(id, *tokens);
+        if let Some(c) = color {
+          app.colors.insert(id, *c);
+        }
+        NodeId::Place(id)
+      }
+      ClipboardNode::Transition { label, rotation } => {
+        app.next_transition_n += 1;
+        let id = app.net.add_transition(label.clone());
+        if let Some(r) = rotation {
+          app.rotation.insert(id, *r);
+        }
+        NodeId::Transition(id)
+      }
+    };
+    app.positions.insert(new_id, *pos + PASTE_OFFSET);
+    mapping.insert(*old_id, new_id);
+    new_selection.insert(new_id);
+  }
+  for (from, to, kind) in &clip.arcs_in {
+    if let (Some(&NodeId::Place(np)), Some(&NodeId::Transition(nt))) =
+      (mapping.get(from), mapping.get(to))
+    {
+      let _ = app.net.add_arc_place_to_transition(np, nt, *kind);
+    }
+  }
+  for (from, to, weight) in &clip.arcs_out {
+    if let (Some(&NodeId::Transition(nt)), Some(&NodeId::Place(np))) =
+      (mapping.get(from), mapping.get(to))
+    {
+      let _ = app.net.add_arc_transition_to_place(nt, np, *weight);
+    }
+  }
+  app.selection = Selection::Nodes(new_selection);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Align {
+  /// Levels the group along whichever axis it's already loosely lined up on: a wider-than-tall
+  /// selection becomes a row (shared y), a taller-than-wide one becomes a column (shared,
+  /// centered x) — same call a "straighten" tool in a drawing app would make.
+  Auto,
+  Left,
+  Center,
+  Right,
+}
+
+/// Aligns every node in `nodes` along `align`. No-op below two nodes — there's nothing to align
+/// relative to.
+fn align_selected(app: &mut PetriApp, nodes: &HashSet<NodeId>, align: Align) {
+  let positions: Vec<(NodeId, egui::Pos2)> = nodes
+    .iter()
+    .filter_map(|&n| app.positions.get(&n).map(|&p| (n, p)))
+    .collect();
+  if positions.len() < 2 {
+    return;
+  }
+  checkpoint(app);
+
+  let (min_x, max_x) = positions
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (_, p)| {
+      (lo.min(p.x), hi.max(p.x))
+    });
+  let (min_y, max_y) = positions
+    .iter()
+    .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (_, p)| {
+      (lo.min(p.y), hi.max(p.y))
+    });
+  let avg_x = positions.iter().map(|(_, p)| p.x).sum::<f32>() / positions.len() as f32;
+  let avg_y = positions.iter().map(|(_, p)| p.y).sum::<f32>() / positions.len() as f32;
+  let auto_row = (max_x - min_x) >= (max_y - min_y);
+
+  for (n, p) in positions {
+    let new_pos = match align {
+      Align::Left => egui::pos2(min_x, p.y),
+      Align::Center => egui::pos2(avg_x, p.y),
+      Align::Right => egui::pos2(max_x, p.y),
+      Align::Auto if auto_row => egui::pos2(p.x, avg_y),
+      Align::Auto => egui::pos2(avg_x, p.y),
+    };
+    app.positions.insert(n, new_pos);
+  }
+}
+
 /// `pos` is in world space.
 fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
   let hit = hit_test(app, pos);
@@ -1061,6 +1329,7 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
   match app.mode {
     EditMode::AddPlace => {
       if hit.is_none() {
+        checkpoint(app);
         app.next_place_n += 1;
         let id = app.net.add_place(format!("p{}", app.next_place_n));
         app.positions.insert(NodeId::Place(id), pos);
@@ -1068,6 +1337,7 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
     }
     EditMode::AddTransition => {
       if hit.is_none() {
+        checkpoint(app);
         app.next_transition_n += 1;
         let id = app
           .net
@@ -1077,6 +1347,7 @@ fn handle_click(app: &mut PetriApp, pos: egui::Pos2) {
     }
     EditMode::AddNote => {
       if note_hit_test(app, pos).is_none() {
+        checkpoint(app);
         let size = egui::vec2(180.0, 100.0);
         let id = app.notes.insert(crate::app::NoteData {
           pos: pos - size / 2.0,
@@ -1237,21 +1508,28 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
       if let Some(pos) = response.interact_pointer_pos() {
         let world = to_world(pos, pan, zoom);
         if let Some(note_id) = note_resize_hit_test(app, world) {
+          checkpoint(app);
           app.resizing_note = Some(note_id);
           app.selection = Selection::Note(note_id);
         } else if let Some(note_id) = note_hit_test(app, world) {
+          checkpoint(app);
           app.dragging_note = Some(note_id);
           app.reselecting_note = app.selection == Selection::Note(note_id);
           app.selection = Selection::Note(note_id);
         } else {
           app.dragging = hit_test(app, world);
-          if app.dragging.is_none() && app.mode == EditMode::Select {
+          if app.dragging.is_some() {
+            checkpoint(app);
+          } else if app.mode == EditMode::Select {
             app.marquee_start = Some(world);
             app.marquee_current = Some(world);
           }
         }
       }
     }
+    // Held while dragging a node/note, snaps its position to the grid (same step `draw_grid`
+    // dots at) instead of moving freely.
+    let snap = ui.input(|i| i.modifiers.shift);
     if response.dragged() {
       if let Some(note_id) = app.resizing_note {
         let delta = response.drag_delta() / zoom;
@@ -1259,12 +1537,24 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
           note.size = (note.size + delta).max(NOTE_MIN_SIZE);
         }
       } else if let Some(note_id) = app.dragging_note {
-        let delta = response.drag_delta() / zoom;
+        let raw_delta = response.drag_delta() / zoom;
         if let Some(note) = app.notes.get_mut(note_id) {
-          note.pos += delta;
+          note.pos = if snap {
+            snap_to_grid(note.pos + raw_delta)
+          } else {
+            note.pos + raw_delta
+          };
         }
       } else if let Some(node) = app.dragging {
-        let delta = response.drag_delta() / zoom;
+        let raw_delta = response.drag_delta() / zoom;
+        let delta = if snap {
+          app
+            .positions
+            .get(&node)
+            .map_or(raw_delta, |&pos| snap_to_grid(pos + raw_delta) - pos)
+        } else {
+          raw_delta
+        };
         // Dragging any node that's part of an active multi-selection moves the whole group;
         // dragging an unselected (or singly-selected) node only ever moves that one node.
         let group = match &app.selection {
@@ -1348,7 +1638,22 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
       }
 
       ui.input(|i| {
-        if i.key_pressed(egui::Key::V) {
+        // `command` is Ctrl on Windows/Linux, Cmd on Mac — checked first on the letters it
+        // shares with a mode shortcut (C, V) so e.g. Ctrl+V pastes instead of also flipping to
+        // Connect/Select mode.
+        if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z) {
+          redo(app);
+        } else if i.modifiers.command && i.key_pressed(egui::Key::Z) {
+          undo(app);
+        }
+        if i.modifiers.command && i.key_pressed(egui::Key::C) {
+          copy_selection(app);
+        } else if i.key_pressed(egui::Key::C) {
+          apply_mode(app, EditMode::Connect);
+        }
+        if i.modifiers.command && i.key_pressed(egui::Key::V) {
+          paste_clipboard(app);
+        } else if i.key_pressed(egui::Key::V) {
           apply_mode(app, EditMode::Select);
         }
         if i.key_pressed(egui::Key::P) {
@@ -1356,9 +1661,6 @@ pub fn canvas(app: &mut PetriApp, ui: &mut egui::Ui) {
         }
         if i.key_pressed(egui::Key::T) {
           apply_mode(app, EditMode::AddTransition);
-        }
-        if i.key_pressed(egui::Key::C) {
-          apply_mode(app, EditMode::Connect);
         }
         if i.key_pressed(egui::Key::N) {
           apply_mode(app, EditMode::AddNote);
@@ -1846,20 +2148,59 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.menu_button("Editar", |ui| {
       ui.set_min_width(170.0);
       begin_flat_menu(ui);
-      ui.add_enabled(
-        false,
-        egui::Button::new((icons::icon("undo-2", 13.0), "Deshacer"))
-          .corner_radius(6.0)
-          .frame_when_inactive(false),
-      )
-      .on_disabled_hover_text("Próximamente");
-      ui.add_enabled(
-        false,
-        egui::Button::new((icons::icon("redo-2", 13.0), "Rehacer"))
-          .corner_radius(6.0)
-          .frame_when_inactive(false),
-      )
-      .on_disabled_hover_text("Próximamente");
+      if ui
+        .add_enabled(
+          !app.undo_stack.is_empty(),
+          egui::Button::new((icons::icon("undo-2", 13.0), "Deshacer"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
+        )
+        .on_hover_text("Ctrl+Z")
+        .clicked()
+      {
+        undo(app);
+        ui.close();
+      }
+      if ui
+        .add_enabled(
+          !app.redo_stack.is_empty(),
+          egui::Button::new((icons::icon("redo-2", 13.0), "Rehacer"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
+        )
+        .on_hover_text("Ctrl+Shift+Z")
+        .clicked()
+      {
+        redo(app);
+        ui.close();
+      }
+      ui.separator();
+      if ui
+        .add_enabled(
+          matches!(&app.selection, Selection::Nodes(n) if !n.is_empty()),
+          egui::Button::new((icons::icon("copy", 13.0), "Copiar"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
+        )
+        .on_hover_text("Ctrl+C")
+        .clicked()
+      {
+        copy_selection(app);
+        ui.close();
+      }
+      if ui
+        .add_enabled(
+          app.clipboard.is_some(),
+          egui::Button::new((icons::icon("clipboard-paste", 13.0), "Pegar"))
+            .corner_radius(6.0)
+            .frame_when_inactive(false),
+        )
+        .on_hover_text("Ctrl+V")
+        .clicked()
+      {
+        paste_clipboard(app);
+        ui.close();
+      }
     });
 
     // Rect captured for the tutorial's last step to spotlight this button specifically instead
@@ -2194,6 +2535,35 @@ pub fn selection_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
       ui.separator();
       ui.add_space(10.0);
 
+      section_label(ui, "Alinear");
+      ui.add_space(6.0);
+      ui.horizontal(|ui| {
+        let align_btn = |ui: &mut egui::Ui, icon_name: &'static str, tooltip: &str| {
+          ui
+            .add(
+              egui::Button::new(icons::icon(icon_name, 14.0))
+                .corner_radius(6.0)
+                .min_size(egui::vec2(36.0, 30.0)),
+            )
+            .on_hover_text(tooltip)
+        };
+        if align_btn(ui, "wand-sparkles", "Auto").clicked() {
+          align_selected(app, &nodes, Align::Auto);
+        }
+        if align_btn(ui, "align-horizontal-justify-start", "Izquierda").clicked() {
+          align_selected(app, &nodes, Align::Left);
+        }
+        if align_btn(ui, "align-horizontal-justify-center", "Centro").clicked() {
+          align_selected(app, &nodes, Align::Center);
+        }
+        if align_btn(ui, "align-horizontal-justify-end", "Derecha").clicked() {
+          align_selected(app, &nodes, Align::Right);
+        }
+      });
+      ui.add_space(10.0);
+      ui.separator();
+      ui.add_space(10.0);
+
       if let Some(focus) = app.selection_focus {
         if !nodes.contains(&focus) {
           app.selection_focus = None;
@@ -2486,7 +2856,22 @@ pub fn simulate_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
   ui.horizontal(|ui| {
     ui.label(icons::icon("play", 14.0));
     ui.strong("Simulación");
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+      if ui
+        .add(egui::Button::new(icons::icon("x", 13.0)).frame(false))
+        .on_hover_text("Cerrar simulación")
+        .clicked()
+      {
+        toggle_simulate(app);
+      }
+    });
   });
+  ui.weak(format!(
+    "Paso {} · {} adelante disponible{}",
+    app.sim_history.len(),
+    app.sim_future.len(),
+    if app.sim_future.len() == 1 { "" } else { "s" }
+  ));
   ui.add_space(12.0);
 
   let ctrl_btn = |icon_name: &'static str| {
@@ -2525,18 +2910,19 @@ pub fn simulate_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
   });
   ui.add_space(14.0);
 
-  section_label(ui, "Marking");
+  let marking = app.net.marking();
+  let total_tokens: u32 = marking.values().sum();
+  section_label(ui, &format!("Marking · {total_tokens} tokens"));
   ui.add_space(6.0);
   card(ui, |ui| {
-    marking_chips(ui, &app.net, &app.net.marking());
+    marking_chips(ui, &app.net, &marking);
   });
   ui.add_space(12.0);
 
-  section_label(ui, "Transiciones habilitadas");
+  let enabled = fire::enabled_transitions(&app.net, &marking);
+  section_label(ui, &format!("Transiciones habilitadas · {}", enabled.len()));
   ui.add_space(6.0);
   card(ui, |ui| {
-    let marking = app.net.marking();
-    let enabled = fire::enabled_transitions(&app.net, &marking);
     if enabled.is_empty() {
       ui.weak("(ninguna)");
     } else {
@@ -2552,4 +2938,95 @@ pub fn simulate_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
       }
     }
   });
+}
+
+#[cfg(test)]
+mod ux_tests {
+  use super::*;
+
+  fn place_at(app: &mut PetriApp, x: f32, y: f32) -> NodeId {
+    let id = app.net.add_place("p");
+    let node = NodeId::Place(id);
+    app.positions.insert(node, egui::pos2(x, y));
+    node
+  }
+
+  #[test]
+  fn snap_to_grid_rounds_to_nearest_step() {
+    assert_eq!(snap_to_grid(egui::pos2(10.0, 10.0)), egui::pos2(0.0, 0.0));
+    assert_eq!(snap_to_grid(egui::pos2(13.0, 40.0)), egui::pos2(24.0, 48.0));
+  }
+
+  #[test]
+  fn align_left_sets_every_x_to_the_minimum() {
+    let mut app = PetriApp::new();
+    let a = place_at(&mut app, 0.0, 0.0);
+    let b = place_at(&mut app, 100.0, 50.0);
+    align_selected(&mut app, &HashSet::from([a, b]), Align::Left);
+    assert_eq!(app.positions[&a], egui::pos2(0.0, 0.0));
+    assert_eq!(app.positions[&b], egui::pos2(0.0, 50.0)); // y untouched
+  }
+
+  #[test]
+  fn align_center_sets_every_x_to_the_average() {
+    let mut app = PetriApp::new();
+    let a = place_at(&mut app, 0.0, 0.0);
+    let b = place_at(&mut app, 100.0, 0.0);
+    align_selected(&mut app, &HashSet::from([a, b]), Align::Center);
+    assert_eq!(app.positions[&a].x, 50.0);
+    assert_eq!(app.positions[&b].x, 50.0);
+  }
+
+  #[test]
+  fn align_auto_levels_a_wide_group_into_a_row() {
+    let mut app = PetriApp::new();
+    // Wider than tall: auto should level the y's (turn it into a row), not the x's.
+    let a = place_at(&mut app, 0.0, 0.0);
+    let b = place_at(&mut app, 100.0, 20.0);
+    align_selected(&mut app, &HashSet::from([a, b]), Align::Auto);
+    assert_eq!(app.positions[&a].y, app.positions[&b].y);
+    assert_eq!(app.positions[&a].x, 0.0); // x left untouched by a row-align
+  }
+
+  #[test]
+  fn undo_redo_roundtrips_a_checkpointed_change() {
+    let mut app = PetriApp::new();
+    checkpoint(&mut app);
+    let id = app.net.add_place("p1");
+    assert_eq!(app.net.place_ids().count(), 1);
+
+    undo(&mut app);
+    assert_eq!(app.net.place_ids().count(), 0);
+
+    redo(&mut app);
+    assert_eq!(app.net.place_ids().count(), 1);
+    assert_eq!(app.net.place_label(id), "p1");
+  }
+
+  #[test]
+  fn copy_paste_duplicates_selection_and_its_internal_arc() {
+    let mut app = PetriApp::new();
+    let p = app.net.add_place("p");
+    let t = app.net.add_transition("t");
+    app
+      .net
+      .add_arc_place_to_transition(p, t, ArcKind::Consume(1))
+      .unwrap();
+    app.positions.insert(NodeId::Place(p), egui::pos2(0.0, 0.0));
+    app.positions.insert(NodeId::Transition(t), egui::pos2(50.0, 0.0));
+    app.selection = Selection::Nodes(HashSet::from([NodeId::Place(p), NodeId::Transition(t)]));
+
+    copy_selection(&mut app);
+    paste_clipboard(&mut app);
+
+    assert_eq!(app.net.place_ids().count(), 2);
+    assert_eq!(app.net.transition_ids().count(), 2);
+    let new_t = app.net.transition_ids().find(|&x| x != t).unwrap();
+    assert_eq!(app.net.inputs(new_t).len(), 1); // the copied arc came along with it
+
+    let Selection::Nodes(sel) = &app.selection else {
+      panic!("paste should leave the new nodes selected")
+    };
+    assert_eq!(sel.len(), 2);
+  }
 }

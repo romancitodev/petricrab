@@ -18,6 +18,7 @@ slotmap::new_key_type! {
   pub struct NoteId;
 }
 
+#[derive(Clone)]
 pub struct NoteData {
   /// Top-left corner, world space (not centered — makes corner-resize math trivial: the
   /// dragged corner moves, this one stays put).
@@ -151,6 +152,12 @@ pub struct PetriApp {
   pub tutorial: Option<crate::tutorial::TutorialState>,
   /// Persisted so the walkthrough only auto-opens once, ever, per install.
   pub tutorial_seen: bool,
+  /// Undo/redo stacks (Ctrl+Z / Ctrl+Shift+Z) of full-state snapshots — see `editor::Snapshot`
+  /// and `editor::checkpoint`.
+  pub undo_stack: Vec<editor::Snapshot>,
+  pub redo_stack: Vec<editor::Snapshot>,
+  /// Last Ctrl+C'd selection, ready for Ctrl+V — see `editor::Clipboard`.
+  pub clipboard: Option<editor::Clipboard>,
 }
 
 impl PetriApp {
@@ -196,6 +203,9 @@ impl PetriApp {
       dock_panel_rect: egui::Rect::NOTHING,
       tutorial: None,
       tutorial_seen: false,
+      undo_stack: Vec::new(),
+      redo_stack: Vec::new(),
+      clipboard: None,
     }
   }
 
@@ -365,8 +375,17 @@ impl eframe::App for PetriApp {
     toasts.show(ui);
 
     if self.simulate_open {
+      // `default_pos` + `pivot` (not `.anchor(...)`, see the toolbar above) starts the panel
+      // over the toolbar but leaves it draggable, so it can be moved out of the way of whatever
+      // part of the net is being simulated.
       egui::Area::new(egui::Id::new("simulate-popup"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -72.0))
+        .default_pos(egui::pos2(
+          ctx.content_rect().center().x,
+          ctx.content_rect().bottom() - 72.0,
+        ))
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .movable(true)
+        .constrain(true)
         .show(&ctx, |ui| {
           egui::Frame::default()
             .fill(visuals.panel_fill)
