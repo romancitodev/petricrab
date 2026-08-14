@@ -33,10 +33,6 @@ impl From<&Marking> for ExtendedMarking {
 }
 
 impl ExtendedMarking {
-  fn new(extended_tokens: Vec<ExtendedToken>) -> Self {
-    Self(extended_tokens)
-  }
-
   pub fn tokens(&self, id: PlaceId) -> ExtendedToken {
     self.0[id.0]
   }

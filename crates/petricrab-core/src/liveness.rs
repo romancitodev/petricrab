@@ -26,12 +26,6 @@ pub enum Liveness {
   Total,
 }
 
-impl Liveness {
-  fn as_lk(self) -> u8 {
-    self as u8
-  }
-}
-
 /// A report of the liveness level of a transition, including the level, the maximum number of times it can be fired (if applicable), and an example firing sequence.
 pub struct LivenessReport {
   pub level: Liveness,
