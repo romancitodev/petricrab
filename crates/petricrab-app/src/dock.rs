@@ -12,6 +12,7 @@ pub enum DockTab {
   Properties,
   Outline,
   Selection,
+  Help,
 }
 
 /// A dock chrome that reads as part of this app's own editor UI instead of a generic library
@@ -64,6 +65,7 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Properties => "Propiedades del net".into(),
       DockTab::Outline => "Estructura".into(),
       DockTab::Selection => "Selección".into(),
+      DockTab::Help => "Ayuda".into(),
     }
   }
 
@@ -87,6 +89,9 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Selection => {
         egui::ScrollArea::vertical().show(ui, |ui| crate::editor::selection_panel(self.app, ui));
       }
+      DockTab::Help => {
+        egui::ScrollArea::vertical().show(ui, crate::help_panel::show);
+      }
     }
   }
 
@@ -96,6 +101,7 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Properties => self.app.properties = None,
       DockTab::Outline => {}
       DockTab::Selection => self.app.selection = crate::app::Selection::None,
+      DockTab::Help => {}
     }
     egui_dock::tab_viewer::OnCloseResponse::Close
   }
@@ -107,7 +113,9 @@ pub fn toggle_reachability(app: &mut PetriApp) {
   if app.reachability.is_some() {
     close_reachability(app);
   } else {
-    app.reachability = Some(crate::reachability_panel::ReachabilityState::explore(&app.net));
+    app.reachability = Some(crate::reachability_panel::ReachabilityState::explore(
+      &app.net,
+    ));
     if app.dock.find_tab(&DockTab::Reachability).is_none() {
       app.dock.push_to_focused_leaf(DockTab::Reachability);
     }
@@ -146,6 +154,16 @@ pub fn toggle_outline(app: &mut PetriApp) {
     app.dock.remove_tab(path);
   } else {
     app.dock.push_to_focused_leaf(DockTab::Outline);
+  }
+}
+
+/// The help panel has no computed-data `Option` to gate either (it's static text) — same
+/// presence-only toggle as the outline.
+pub fn toggle_help(app: &mut PetriApp) {
+  if let Some(path) = app.dock.find_tab(&DockTab::Help) {
+    app.dock.remove_tab(path);
+  } else {
+    app.dock.push_to_focused_leaf(DockTab::Help);
   }
 }
 

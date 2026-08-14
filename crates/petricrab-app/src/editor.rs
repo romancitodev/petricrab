@@ -288,7 +288,13 @@ fn is_reciprocal(
 /// place<->transition pair (arcs running both ways) gets a small fixed bow so the two separate
 /// instead of overlapping; a long run with nothing in the way still gets a gentle bow, since a
 /// dead-straight long line reads as noise on a busy canvas; anything else stays straight.
-fn arc_bow(app: &PetriApp, from: egui::Pos2, to: egui::Pos2, from_node: NodeId, to_node: NodeId) -> f32 {
+fn arc_bow(
+  app: &PetriApp,
+  from: egui::Pos2,
+  to: egui::Pos2,
+  from_node: NodeId,
+  to_node: NodeId,
+) -> f32 {
   let delta = to - from;
   let len = delta.length();
   if len < 1.0 {
@@ -463,8 +469,7 @@ fn draw_arc(
 /// since a place's fill can now be any custom color the user picked, not just the theme
 /// default, and a fixed token color would go invisible against a similarly-toned fill.
 fn contrasting_on(bg: egui::Color32) -> egui::Color32 {
-  let luminance =
-    0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
+  let luminance = 0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32;
   if luminance > 140.0 {
     egui::Color32::from_rgb(20, 20, 22)
   } else {
@@ -581,7 +586,8 @@ fn draw_net(
   // highlight against real context, instead of a same-weight diagram.
   let route = app.route_modal.as_ref();
   let dim = |c: egui::Color32| c.gamma_multiply(0.28);
-  let place_dimmed = |p: crate::model::PlaceId| route.is_some_and(|r| !r.route_places().contains(&p));
+  let place_dimmed =
+    |p: crate::model::PlaceId| route.is_some_and(|r| !r.route_places().contains(&p));
   let transition_dimmed =
     |t: crate::model::TransitionId| route.is_some_and(|r| !r.route_transitions().contains(&t));
   let current_t = route.and_then(|r| r.current_transition());
@@ -686,8 +692,16 @@ fn draw_net(
     let dimmed = place_dimmed(p);
     let fill = app.colors.get(&p).copied().unwrap_or(theme::ink());
     painter.circle_filled(pos, PLACE_RADIUS * zoom, fill);
-    let ring = if dimmed { dim(theme::text()) } else { theme::text() };
-    painter.circle_stroke(pos, PLACE_RADIUS * zoom, egui::Stroke::new(1.4 * zoom, ring));
+    let ring = if dimmed {
+      dim(theme::text())
+    } else {
+      theme::text()
+    };
+    painter.circle_stroke(
+      pos,
+      PLACE_RADIUS * zoom,
+      egui::Stroke::new(1.4 * zoom, ring),
+    );
     draw_tokens(painter, pos, app.net.tokens(p), zoom, contrasting_on(fill));
     let label_color = if dimmed {
       dim(visuals.weak_text_color())
@@ -812,14 +826,21 @@ fn note_rect(note: &crate::app::NoteData) -> egui::Rect {
 /// via an actual `TextEdit` placed on top (see `note_edit_overlay`), so its static text is
 /// skipped here to avoid drawing under the widget; every other note gets wrapped, clipped
 /// static text painted directly (cheaper than a widget for something you're not touching).
-fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f32, visuals: &egui::Visuals) {
+fn draw_notes(
+  app: &PetriApp,
+  painter: &egui::Painter,
+  pan: egui::Vec2,
+  zoom: f32,
+  visuals: &egui::Visuals,
+) {
   for (id, note) in app.notes.iter() {
-    let rect = egui::Rect::from_min_size(
-      to_screen(note.pos, pan, zoom),
-      note.size * zoom,
-    );
+    let rect = egui::Rect::from_min_size(to_screen(note.pos, pan, zoom), note.size * zoom);
     let selected = app.selection == Selection::Note(id);
-    painter.rect_filled(rect, 6.0 * zoom, note.color.unwrap_or(theme::surface_raised()));
+    painter.rect_filled(
+      rect,
+      6.0 * zoom,
+      note.color.unwrap_or(theme::surface_raised()),
+    );
     painter.rect_stroke(
       rect,
       6.0 * zoom,
@@ -847,7 +868,9 @@ fn draw_notes(app: &PetriApp, painter: &egui::Painter, pan: egui::Vec2, zoom: f3
         color,
         text_rect.width(),
       );
-      painter.with_clip_rect(text_rect).galley(text_rect.left_top(), galley, color);
+      painter
+        .with_clip_rect(text_rect)
+        .galley(text_rect.left_top(), galley, color);
     }
 
     // Resize handle: a small corner glyph, only worth showing (and interacting with) once
@@ -877,7 +900,8 @@ fn note_edit_overlay(app: &mut PetriApp, ui: &mut egui::Ui, pan: egui::Vec2, zoo
   let Some(note) = app.notes.get_mut(id) else {
     return;
   };
-  let rect = egui::Rect::from_min_size(to_screen(note.pos, pan, zoom), note.size * zoom).shrink(8.0 * zoom);
+  let rect =
+    egui::Rect::from_min_size(to_screen(note.pos, pan, zoom), note.size * zoom).shrink(8.0 * zoom);
   ui.put(
     rect,
     egui::TextEdit::multiline(&mut note.text)
@@ -1419,7 +1443,9 @@ fn toggle_menu_item(ui: &mut egui::Ui, checked: bool, label: &str) -> egui::Resp
     // pill next to the rest of this flat menu — a faint tint is enough to say "this is on".
     .frame_when_inactive(checked);
   if checked {
-    button = button.fill(theme::accent().gamma_multiply(0.18)).frame(true);
+    button = button
+      .fill(theme::accent().gamma_multiply(0.18))
+      .frame(true);
   }
   ui.add(button)
 }
@@ -1748,6 +1774,11 @@ fn file_save(app: &mut PetriApp) {
 
 /// Top menu bar: identity mark on the left, then File/Edit/View menus.
 pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+  let no_focus = ctx.memory(|m| m.focused().is_none());
+  if no_focus && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+    crate::dock::toggle_help(app);
+  }
+
   egui::MenuBar::new().ui(ui, |ui| {
     // `MenuBar` forces a cramped `(2, 0)` button padding on its direct contents (fine for a
     // dense app menu bar in general, but reads as squished here) — give the top-level
@@ -1831,28 +1862,52 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
       .on_disabled_hover_text("Próximamente");
     });
 
-    ui.menu_button("Ver", |ui| {
+    // Rect captured for the tutorial's last step to spotlight this button specifically instead
+    // of the whole menu bar — set every frame, read only while a tutorial is open. "Propiedades
+    // del net" lives under "Ver", not "Editar".
+    app.menu_ver_rect = ui
+      .menu_button("Ver", |ui| {
+        ui.set_min_width(190.0);
+        begin_flat_menu(ui);
+        if toggle_menu_item(ui, app.show_grid, "Mostrar grilla").clicked() {
+          app.show_grid = !app.show_grid;
+        }
+        if menu_item(ui, "locate-fixed", "Reiniciar vista").clicked() {
+          reset_view(app);
+          ui.close();
+        }
+        ui.separator();
+        if toggle_menu_item(
+          ui,
+          app.reachability.is_some(),
+          "Explorar espacio de estados",
+        )
+        .clicked()
+        {
+          crate::dock::toggle_reachability(app);
+        }
+        if toggle_menu_item(ui, app.properties.is_some(), "Propiedades del net").clicked() {
+          crate::dock::toggle_properties(app);
+        }
+        let show_outline = app.dock.find_tab(&crate::dock::DockTab::Outline).is_some();
+        if toggle_menu_item(ui, show_outline, "Estructura").clicked() {
+          crate::dock::toggle_outline(app);
+        }
+      })
+      .response
+      .rect;
+
+    ui.menu_button("Ayuda", |ui| {
       ui.set_min_width(190.0);
       begin_flat_menu(ui);
-      if toggle_menu_item(ui, app.show_grid, "Mostrar grilla").clicked() {
-        app.show_grid = !app.show_grid;
-      }
-      if menu_item(ui, "locate-fixed", "Reiniciar vista").clicked() {
-        reset_view(app);
-        ui.close();
+      let show_help = app.dock.find_tab(&crate::dock::DockTab::Help).is_some();
+      if toggle_menu_item(ui, show_help, "Ayuda (F1)").clicked() {
+        crate::dock::toggle_help(app);
       }
       ui.separator();
-      if toggle_menu_item(ui, app.reachability.is_some(), "Explorar espacio de estados")
-        .clicked()
-      {
-        crate::dock::toggle_reachability(app);
-      }
-      if toggle_menu_item(ui, app.properties.is_some(), "Propiedades del net").clicked() {
-        crate::dock::toggle_properties(app);
-      }
-      let show_outline = app.dock.find_tab(&crate::dock::DockTab::Outline).is_some();
-      if toggle_menu_item(ui, show_outline, "Estructura").clicked() {
-        crate::dock::toggle_outline(app);
+      if menu_item(ui, "graduation-cap", "Ver tutorial").clicked() {
+        app.tutorial = Some(crate::tutorial::TutorialState::new());
+        ui.close();
       }
     });
 
@@ -2298,10 +2353,14 @@ pub fn outline_panel(app: &mut PetriApp, ui: &mut egui::Ui) {
     for p in place_ids {
       let selected = app.selection == Selection::Nodes([NodeId::Place(p)].into());
       let row = ui.add(
-        egui::Button::new(format!("{}   ·   {} tok.", app.net.place_label(p), app.net.tokens(p)))
-          .frame(false)
-          .selected(selected)
-          .min_size(egui::vec2(ui.available_width(), 0.0)),
+        egui::Button::new(format!(
+          "{}   ·   {} tok.",
+          app.net.place_label(p),
+          app.net.tokens(p)
+        ))
+        .frame(false)
+        .selected(selected)
+        .min_size(egui::vec2(ui.available_width(), 0.0)),
       );
       if row.clicked() {
         app.selection = Selection::Nodes([NodeId::Place(p)].into());
@@ -2396,7 +2455,11 @@ pub(crate) fn token_chip(ui: &mut egui::Ui, place_label: &str, tokens: u32) {
 /// One chip per marked place, wrapped onto new rows as needed. The one place that renders a
 /// full `Marking` as chips instead of a flat comma-joined string, so each label/count pair stays
 /// visually paired even when it wraps.
-pub(crate) fn marking_chips(ui: &mut egui::Ui, net: &crate::model::PetriNet, marking: &crate::model::Marking) {
+pub(crate) fn marking_chips(
+  ui: &mut egui::Ui,
+  net: &crate::model::PetriNet,
+  marking: &crate::model::Marking,
+) {
   ui.horizontal_wrapped(|ui| {
     let mut any = false;
     for (&place, &tokens) in marking.iter() {

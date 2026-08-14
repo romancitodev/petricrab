@@ -7,6 +7,7 @@ mod analysis;
 mod app;
 mod dock;
 mod editor;
+mod help_panel;
 mod icons;
 mod model;
 mod project;
@@ -14,6 +15,7 @@ mod properties_panel;
 mod reachability_panel;
 mod route_modal;
 mod theme;
+mod tutorial;
 
 /// Logs to `petricrab.log` next to the executable (append mode, so a previous crash's entries
 /// survive until you go looking for them) instead of a console, which release builds no longer
@@ -25,11 +27,23 @@ fn init_logging() {
     .and_then(|exe| exe.parent().map(|dir| dir.join("petricrab.log")))
     .unwrap_or_else(|| std::path::PathBuf::from("petricrab.log"));
 
-  if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
-    let _ = simplelog::WriteLogger::init(simplelog::LevelFilter::Info, simplelog::Config::default(), file);
+  if let Ok(file) = std::fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&log_path)
+  {
+    let _ = simplelog::WriteLogger::init(
+      simplelog::LevelFilter::Info,
+      simplelog::Config::default(),
+      file,
+    );
   }
   log_panics::init();
-  log::info!("petricrab v{} starting, log: {}", env!("CARGO_PKG_VERSION"), log_path.display());
+  log::info!(
+    "petricrab v{} starting, log: {}",
+    env!("CARGO_PKG_VERSION"),
+    log_path.display()
+  );
 }
 
 fn main() -> eframe::Result<()> {
@@ -55,7 +69,15 @@ fn main() -> eframe::Result<()> {
       theme::apply(&cc.egui_ctx, persisted.light_mode);
       app.light_mode = persisted.light_mode;
       // Drop entries for files that moved/were deleted since the last run.
-      app.recent = persisted.recent.into_iter().filter(|p| p.is_file()).collect();
+      app.recent = persisted
+        .recent
+        .into_iter()
+        .filter(|p| p.is_file())
+        .collect();
+      app.tutorial_seen = persisted.tutorial_seen;
+      if !app.tutorial_seen {
+        app.tutorial = Some(tutorial::TutorialState::new());
+      }
       Ok(Box::new(app))
     }),
   )

@@ -136,6 +136,21 @@ pub struct PetriApp {
   /// Set from the "Ver ruta" button on a deadlock; drawn as a blocking `egui::Modal` in `ui()`
   /// (unlike `simulate_open`'s free-form popup, this one locks input to its own step-through).
   pub route_modal: Option<crate::route_modal::RouteModal>,
+  /// Screen-space rect the floating mode toolbar painted into last frame — refreshed every
+  /// frame in `ui()` below, same idea as `canvas_rect`. Lets the tutorial spotlight point at it
+  /// without the toolbar needing to know the tutorial exists.
+  pub toolbar_rect: egui::Rect,
+  /// Screen-space rect the "Ver" menu button painted into last frame ("Propiedades del net"
+  /// lives there), same purpose as `toolbar_rect` — set in `editor::menu_bar`, since that's
+  /// where the button itself lives.
+  pub menu_ver_rect: egui::Rect,
+  /// Screen-space rect the right-hand dock panel (Selección/Propiedades/etc.) painted into last
+  /// frame, when one is open — only meaningful while `dock.main_surface().num_tabs() > 0`.
+  pub dock_panel_rect: egui::Rect,
+  /// Guided first-run walkthrough; `None` once dismissed (finished/skipped/Esc) or never shown.
+  pub tutorial: Option<crate::tutorial::TutorialState>,
+  /// Persisted so the walkthrough only auto-opens once, ever, per install.
+  pub tutorial_seen: bool,
 }
 
 impl PetriApp {
@@ -176,6 +191,11 @@ impl PetriApp {
       sim_future: Vec::new(),
       toast_queue: Vec::new(),
       route_modal: None,
+      toolbar_rect: egui::Rect::NOTHING,
+      menu_ver_rect: egui::Rect::NOTHING,
+      dock_panel_rect: egui::Rect::NOTHING,
+      tutorial: None,
+      tutorial_seen: false,
     }
   }
 
@@ -201,6 +221,11 @@ impl PetriApp {
 pub struct PersistedState {
   pub recent: Vec<std::path::PathBuf>,
   pub light_mode: bool,
+  /// `#[serde(default)]`: an eframe storage file saved before this field existed is missing
+  /// the key entirely — without a default, deserializing it fails outright and silently wipes
+  /// `recent`/`light_mode` too (see `main.rs`'s `.unwrap_or_default()` fallback).
+  #[serde(default)]
+  pub tutorial_seen: bool,
 }
 
 impl eframe::App for PetriApp {
@@ -211,6 +236,7 @@ impl eframe::App for PetriApp {
       &PersistedState {
         recent: self.recent.clone(),
         light_mode: self.light_mode,
+        tutorial_seen: self.tutorial_seen,
       },
     );
   }
@@ -239,7 +265,7 @@ impl eframe::App for PetriApp {
     // (tab-less) leaf node, so that check never actually hides the panel. `num_tabs()` is the
     // one that means what we want: nothing open, no space taken.
     if self.dock.main_surface().num_tabs() > 0 {
-      egui::Panel::right("dock_panels")
+      self.dock_panel_rect = egui::Panel::right("dock_panels")
         .frame(egui::Frame::default().fill(visuals.panel_fill))
         .default_size(340.0)
         .min_size(260.0)
@@ -249,7 +275,9 @@ impl eframe::App for PetriApp {
             .style(crate::dock::style(ui.style()))
             .show_inside(ui, &mut crate::dock::DockTabViewer { app: self });
           self.dock = dock;
-        });
+        })
+        .response
+        .rect;
     }
 
     egui::Panel::bottom("status_bar")
@@ -295,14 +323,18 @@ impl eframe::App for PetriApp {
     // Default `CentralPanel` frame has an 8px inner margin — enough to read as an accidental
     // crop around the canvas. Zero it out so the canvas paints edge-to-edge.
     egui::CentralPanel::default()
-      .frame(egui::Frame::default().fill(visuals.panel_fill).inner_margin(0))
+      .frame(
+        egui::Frame::default()
+          .fill(visuals.panel_fill)
+          .inner_margin(0),
+      )
       .show(ui, |ui| {
         editor::canvas(self, ui);
       });
 
     // Not `.anchor(...)`, that forces the area immovable. `default_pos` + `pivot` gives the
     // same starting position but leaves it draggable.
-    egui::Area::new(egui::Id::new("toolbar"))
+    self.toolbar_rect = egui::Area::new(egui::Id::new("toolbar"))
       .default_pos(egui::pos2(
         ctx.content_rect().center().x,
         ctx.content_rect().bottom() - 18.0,
@@ -320,7 +352,9 @@ impl eframe::App for PetriApp {
           .show(ui, |ui| {
             editor::toolbar(self, ui);
           });
-      });
+      })
+      .response
+      .rect;
 
     let mut toasts = egui_toast::Toasts::new()
       .anchor(egui::Align2::RIGHT_BOTTOM, egui::pos2(-12.0, -12.0))
@@ -353,6 +387,14 @@ impl eframe::App for PetriApp {
         self.route_modal = Some(route_modal);
       } else {
         route_modal.close(&mut self.net);
+      }
+    }
+
+    if let Some(mut tutorial) = self.tutorial.take() {
+      if crate::tutorial::show(&mut tutorial, &ctx, self) {
+        self.tutorial = Some(tutorial);
+      } else {
+        self.tutorial_seen = true;
       }
     }
   }
