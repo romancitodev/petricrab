@@ -48,7 +48,10 @@ fn dead_ends_from<M: Ord + Clone>(
 ///
 /// Same caveat as [`PetriNet::reachable_markings`]: never returns if the net is unbounded. Use
 /// [`deadlocks_covering`] instead when that's a possibility.
-pub fn deadlocks(net: &PetriNet, initial_marking: &Marking) -> BTreeMap<Marking, Vec<TransitionId>> {
+pub fn deadlocks(
+  net: &PetriNet,
+  initial_marking: &Marking,
+) -> BTreeMap<Marking, Vec<TransitionId>> {
   let graph = net.reachable_markings(initial_marking);
   dead_ends_from(&graph, initial_marking)
 }

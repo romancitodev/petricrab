@@ -221,7 +221,10 @@ impl ReachabilityState {
       graph,
       node_indices,
       warning,
-      graph_id: format!("reachability-{}", EXPLORE_GEN.fetch_add(1, Ordering::Relaxed)),
+      graph_id: format!(
+        "reachability-{}",
+        EXPLORE_GEN.fetch_add(1, Ordering::Relaxed)
+      ),
       refit_pending: true,
       is_dead_end,
       fingerprint: net.fingerprint(),
@@ -386,9 +389,15 @@ impl ReachabilityState {
             // `rect.center()` by construction, at every single frame of the transition, not
             // just at its start and end, which is what actually keeps the anchor visually
             // still instead of drifting sideways mid-zoom (see the struct doc comment).
-            let zoom = ui.ctx().animate_value_with_time(zoom_id, self.target_zoom, GRAPH_ZOOM_ANIM_SECS);
-            let cx = ui.ctx().animate_value_with_time(cx_id, self.target_center.x, GRAPH_ZOOM_ANIM_SECS);
-            let cy = ui.ctx().animate_value_with_time(cy_id, self.target_center.y, GRAPH_ZOOM_ANIM_SECS);
+            let zoom =
+              ui.ctx()
+                .animate_value_with_time(zoom_id, self.target_zoom, GRAPH_ZOOM_ANIM_SECS);
+            let cx =
+              ui.ctx()
+                .animate_value_with_time(cx_id, self.target_center.x, GRAPH_ZOOM_ANIM_SECS);
+            let cy =
+              ui.ctx()
+                .animate_value_with_time(cy_id, self.target_center.y, GRAPH_ZOOM_ANIM_SECS);
             let mut meta = MetadataFrame::new(Some(self.graph_id.clone())).load(ui);
             meta.zoom = zoom;
             meta.pan = rect.center().to_vec2() - egui::vec2(cx, cy) * zoom;
@@ -412,9 +421,12 @@ impl ReachabilityState {
             self.target_center = (rect.center().to_vec2() - meta.pan) / meta.zoom;
             // Zero animation time snaps the eased value to match instantly instead of easing
             // into it (see `animate_value`'s handling of `animation_time == 0.0`).
-            ui.ctx().animate_value_with_time(zoom_id, self.target_zoom, 0.0);
-            ui.ctx().animate_value_with_time(cx_id, self.target_center.x, 0.0);
-            ui.ctx().animate_value_with_time(cy_id, self.target_center.y, 0.0);
+            ui.ctx()
+              .animate_value_with_time(zoom_id, self.target_zoom, 0.0);
+            ui.ctx()
+              .animate_value_with_time(cx_id, self.target_center.x, 0.0);
+            ui.ctx()
+              .animate_value_with_time(cy_id, self.target_center.y, 0.0);
           } else if (view_response.dragged_by(egui::PointerButton::Primary)
             || view_response.dragged_by(egui::PointerButton::Middle))
             // `dragging_enabled` (see `interactions` above) lets individual nodes be
@@ -429,8 +441,10 @@ impl ReachabilityState {
               // Dragging snaps 1:1 with the pointer (zero animation time) rather than easing
               // — direct manipulation should never feel laggy, only button-triggered moves do.
               self.target_center -= delta / self.target_zoom;
-              ui.ctx().animate_value_with_time(cx_id, self.target_center.x, 0.0);
-              ui.ctx().animate_value_with_time(cy_id, self.target_center.y, 0.0);
+              ui.ctx()
+                .animate_value_with_time(cx_id, self.target_center.x, 0.0);
+              ui.ctx()
+                .animate_value_with_time(cy_id, self.target_center.y, 0.0);
             }
           }
 
@@ -466,7 +480,10 @@ impl ReachabilityState {
                     if btn(ui, "plus").clicked() {
                       self.nudge_zoom(GRAPH_ZOOM_STEP);
                     }
-                    if btn(ui, "maximize").on_hover_text("Ajustar a la vista").clicked() {
+                    if btn(ui, "maximize")
+                      .on_hover_text("Ajustar a la vista")
+                      .clicked()
+                    {
                       self.refit_pending = true;
                     }
                   });
@@ -494,7 +511,11 @@ impl ReachabilityState {
             crate::analysis::path_to(net, &self.state_graph.nodes[0], marking)
           && ui.button("Ver ruta").clicked()
         {
-          *route_modal = Some(crate::route_modal::RouteModal::new(net, states, transitions));
+          *route_modal = Some(crate::route_modal::RouteModal::new(
+            net,
+            states,
+            transitions,
+          ));
         }
         ui.add_space(10.0);
 

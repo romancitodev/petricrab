@@ -169,9 +169,13 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
     })
     .collect();
 
-  let file = ProjectFile { places, transitions, notes };
-  let archived = rkyv::to_bytes::<rkyv::rancor::Error>(&file)
-    .map_err(|e| io::Error::other(e.to_string()))?;
+  let file = ProjectFile {
+    places,
+    transitions,
+    notes,
+  };
+  let archived =
+    rkyv::to_bytes::<rkyv::rancor::Error>(&file).map_err(|e| io::Error::other(e.to_string()))?;
 
   let mut out = Vec::with_capacity(MAGIC.len() + 1 + archived.len());
   out.extend_from_slice(&MAGIC);
@@ -264,7 +268,9 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
       pos: egui::pos2(n.x, n.y),
       size: egui::vec2(n.w, n.h),
       text: n.text.clone(),
-      color: n.color.map(|(r, g, b, a)| egui::Color32::from_rgba_premultiplied(r, g, b, a)),
+      color: n
+        .color
+        .map(|(r, g, b, a)| egui::Color32::from_rgba_premultiplied(r, g, b, a)),
     });
   }
 
@@ -290,11 +296,11 @@ mod tests {
     let p2 = app.net.add_place("p2");
     let t = app.net.add_transition("t1");
     app.net.set_tokens(p1, 3);
-    let _ = app
-      .net
-      .add_arc_place_to_transition(p1, t, ArcKind::Peek(1));
+    let _ = app.net.add_arc_place_to_transition(p1, t, ArcKind::Peek(1));
     let _ = app.net.add_arc_transition_to_place(t, p2, 2);
-    app.positions.insert(NodeId::Place(p1), egui::pos2(10.0, 20.0));
+    app
+      .positions
+      .insert(NodeId::Place(p1), egui::pos2(10.0, 20.0));
     app.rotation.insert(t, 45.0);
     app.colors.insert(p1, egui::Color32::from_rgb(200, 60, 30));
     app.notes.insert(crate::app::NoteData {
@@ -336,7 +342,10 @@ mod tests {
     let loaded_note = loaded.notes.values().next().unwrap();
     assert_eq!(loaded_note.text, "leyenda");
     assert_eq!(loaded_note.pos, egui::pos2(5.0, 6.0));
-    assert_eq!(loaded_note.color, Some(egui::Color32::from_rgb(80, 120, 200)));
+    assert_eq!(
+      loaded_note.color,
+      Some(egui::Color32::from_rgb(80, 120, 200))
+    );
   }
 
   #[test]

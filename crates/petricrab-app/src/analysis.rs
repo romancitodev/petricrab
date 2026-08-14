@@ -152,7 +152,11 @@ pub struct Deadlock {
 /// (`states[0] == from`). Stops early (shorter than `path.len() + 1`) if some transition in
 /// `path` turns out not to be enabled when actually fired — only possible for a witness that
 /// came from a coverability graph instead of the exact reachability set.
-pub fn replay_path(net: &ModelNet, from: &ModelMarking, path: &[ModelTransitionId]) -> Vec<ModelMarking> {
+pub fn replay_path(
+  net: &ModelNet,
+  from: &ModelMarking,
+  path: &[ModelTransitionId],
+) -> Vec<ModelMarking> {
   let mut states = vec![from.clone()];
   for &t in path {
     let Ok(next) = fire_in(net, states.last().unwrap(), t) else {
@@ -220,7 +224,11 @@ fn to_model_marking(
 ) -> ModelMarking {
   net
     .place_ids()
-    .filter_map(|p| reverse_places.get(&p).map(|&mp| (mp, marking.tokens(p) as u32)))
+    .filter_map(|p| {
+      reverse_places
+        .get(&p)
+        .map(|&mp| (mp, marking.tokens(p) as u32))
+    })
     .collect()
 }
 

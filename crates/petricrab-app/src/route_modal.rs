@@ -30,7 +30,11 @@ impl RouteModal {
   /// `states[0]` is where the route starts; `states[i + 1]` is `states[i]` after firing
   /// `transitions[i]`. `states` can be shorter than `transitions.len() + 1` for a witness that
   /// came from a coverability graph (see `analysis::replay_path`'s doc).
-  pub fn new(net: &PetriNet, states: Vec<ModelMarking>, transitions: Vec<ModelTransitionId>) -> Self {
+  pub fn new(
+    net: &PetriNet,
+    states: Vec<ModelMarking>,
+    transitions: Vec<ModelTransitionId>,
+  ) -> Self {
     let route_places = states
       .iter()
       .flat_map(|m| m.iter().filter(|&(_, &tokens)| tokens > 0).map(|(&p, _)| p))
@@ -72,9 +76,12 @@ impl RouteModal {
   /// The transition to point the camera at: the one about to fire, or — once the route has run
   /// out (reached the deadlock) — the last one that did.
   fn focus_transition(&self) -> Option<ModelTransitionId> {
-    self
-      .current_transition()
-      .or_else(|| self.step.checked_sub(1).and_then(|i| self.transitions.get(i).copied()))
+    self.current_transition().or_else(|| {
+      self
+        .step
+        .checked_sub(1)
+        .and_then(|i| self.transitions.get(i).copied())
+    })
   }
 
   fn step_back(&mut self) {

@@ -63,7 +63,12 @@ impl PropertiesState {
               status_badge(ui, "check", &format!("k = {k}"), crate::theme::success());
             }
             petricrab_core::Boundedness::Unbounded => {
-              status_badge(ui, "triangle-alert", "No acotado", ui.visuals().warn_fg_color);
+              status_badge(
+                ui,
+                "triangle-alert",
+                "No acotado",
+                ui.visuals().warn_fg_color,
+              );
             }
           }
           ui.end_row();
@@ -127,7 +132,11 @@ impl PropertiesState {
         ui.weak(format!("ruta: {path}"));
         if ui.button("Ver ruta").clicked() {
           let states = analysis::replay_path(net, &net.marking(), &t.example);
-          *route_modal = Some(crate::route_modal::RouteModal::new(net, states, t.example.clone()));
+          *route_modal = Some(crate::route_modal::RouteModal::new(
+            net,
+            states,
+            t.example.clone(),
+          ));
         }
       }
       ui.add_space(6.0);
@@ -171,7 +180,11 @@ impl PropertiesState {
         && !transitions.is_empty()
         && ui.button("Ver ruta").clicked()
       {
-        *route_modal = Some(crate::route_modal::RouteModal::new(net, states, transitions));
+        *route_modal = Some(crate::route_modal::RouteModal::new(
+          net,
+          states,
+          transitions,
+        ));
       }
       ui.add_space(4.0);
     }
