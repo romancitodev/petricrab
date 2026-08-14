@@ -416,7 +416,12 @@ mod tests {
       .chain([t2, t3, t4, t5, t6].map(NodeId::Transition))
       .collect();
     // Scatter them arbitrarily first — beautify shouldn't depend on a lucky starting layout.
-    for (i, &n) in nodes.iter().enumerate() {
+    // Iterated from a sorted Vec, not `nodes.iter()` directly: HashSet iteration order is
+    // randomized per process, which would make the scatter (and so the final settled layout)
+    // different every run.
+    let mut sorted_nodes: Vec<NodeId> = nodes.iter().copied().collect();
+    sorted_nodes.sort();
+    for (i, &n) in sorted_nodes.iter().enumerate() {
       app.positions.insert(n, egui::pos2((i * 7 % 5) as f32, (i * 3 % 4) as f32));
     }
 
