@@ -62,3 +62,4 @@ jobs:
         with:
           files: ${{ matrix.asset_name }}
           body_path: CHANGES.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
