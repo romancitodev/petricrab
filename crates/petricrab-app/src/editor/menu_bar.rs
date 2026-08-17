@@ -45,6 +45,10 @@ fn open_path(app: &mut PetriApp, path: std::path::PathBuf) {
       app.rotation = loaded.rotation;
       app.colors = loaded.colors;
       app.notes = loaded.notes;
+      app.dsl = crate::dsl_panel::DslState {
+        source: loaded.dsl_source,
+        errors: Vec::new(),
+      };
       app.next_place_n = loaded.next_place_n;
       app.next_transition_n = loaded.next_transition_n;
       log::info!("opened project: {}", path.display());
@@ -285,6 +289,10 @@ pub fn menu_bar(app: &mut PetriApp, ui: &mut egui::Ui, ctx: &egui::Context) {
         let show_outline = app.dock.find_tab(&crate::dock::DockTab::Outline).is_some();
         if toggle_menu_item(ui, show_outline, "Estructura").clicked() {
           crate::dock::toggle_outline(app);
+        }
+        let show_dsl = app.dock.find_tab(&crate::dock::DockTab::Dsl).is_some();
+        if toggle_menu_item(ui, show_dsl, "DSL (texto)").clicked() {
+          crate::dock::toggle_dsl(app);
         }
       })
       .response

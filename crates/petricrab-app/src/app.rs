@@ -1,6 +1,7 @@
 use crate::model::{Marking, PetriNet, PlaceId, TransitionId};
 use std::collections::{HashMap, HashSet};
 
+use crate::dsl_panel::DslState;
 use crate::editor;
 use crate::properties_panel::PropertiesState;
 use crate::reachability_panel::ReachabilityState;
@@ -96,6 +97,10 @@ pub struct PetriApp {
   pub selection: Selection,
   pub reachability: Option<ReachabilityState>,
   pub properties: Option<PropertiesState>,
+  /// The DSL text buffer + last parse errors — always present (not gated behind opening the
+  /// tab) since, unlike `reachability`/`properties`, it's real document state: persisted in the
+  /// `.gpn` and never regenerated behind the user's back.
+  pub dsl: DslState,
   /// Which analysis panels are currently docked to the right of the canvas — starts empty
   /// (no panel takes up space until the user opens one via the "Ver" menu or an inspector
   /// button). The tabs' actual data still lives in `reachability`/`properties` above; this
@@ -182,6 +187,7 @@ impl PetriApp {
       selection: Selection::None,
       reachability: None,
       properties: None,
+      dsl: DslState::new(&PetriNet::new()),
       dock: egui_dock::DockState::new(Vec::new()),
       next_place_n: 0,
       next_transition_n: 0,

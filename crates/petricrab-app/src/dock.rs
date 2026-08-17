@@ -12,6 +12,7 @@ pub enum DockTab {
   Properties,
   Outline,
   Selection,
+  Dsl,
   Help,
 }
 
@@ -65,6 +66,7 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Properties => "Propiedades del net".into(),
       DockTab::Outline => "Estructura".into(),
       DockTab::Selection => "Selección".into(),
+      DockTab::Dsl => "DSL".into(),
       DockTab::Help => "Ayuda".into(),
     }
   }
@@ -89,6 +91,9 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Selection => {
         egui::ScrollArea::vertical().show(ui, |ui| crate::editor::selection_panel(self.app, ui));
       }
+      DockTab::Dsl => {
+        egui::ScrollArea::vertical().show(ui, |ui| crate::dsl_panel::show(self.app, ui));
+      }
       DockTab::Help => {
         egui::ScrollArea::vertical().show(ui, crate::help_panel::show);
       }
@@ -101,6 +106,7 @@ impl egui_dock::TabViewer for DockTabViewer<'_> {
       DockTab::Properties => self.app.properties = None,
       DockTab::Outline => {}
       DockTab::Selection => self.app.selection = crate::app::Selection::None,
+      DockTab::Dsl => {}
       DockTab::Help => {}
     }
     egui_dock::tab_viewer::OnCloseResponse::Close
@@ -154,6 +160,17 @@ pub fn toggle_outline(app: &mut PetriApp) {
     app.dock.remove_tab(path);
   } else {
     app.dock.push_to_focused_leaf(DockTab::Outline);
+  }
+}
+
+/// The DSL text buffer lives directly on `app.dsl` (not an `Option`) since it's real document
+/// state, persisted in the `.gpn` like positions/colors/notes — same presence-only toggle as
+/// the outline, nothing to compute or clear on open/close.
+pub fn toggle_dsl(app: &mut PetriApp) {
+  if let Some(path) = app.dock.find_tab(&DockTab::Dsl) {
+    app.dock.remove_tab(path);
+  } else {
+    app.dock.push_to_focused_leaf(DockTab::Dsl);
   }
 }
 

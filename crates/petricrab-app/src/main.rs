@@ -6,6 +6,8 @@
 mod analysis;
 mod app;
 mod dock;
+mod dsl;
+mod dsl_panel;
 mod editor;
 mod help_panel;
 mod icons;

@@ -13,7 +13,7 @@ use crate::app::{NodeId, PetriApp};
 use crate::model::{ArcKind, PetriNet, PlaceId, TransitionId};
 
 const MAGIC: [u8; 4] = *b"PCRB";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 
 #[derive(Archive, Serialize, Deserialize, Clone, Copy)]
 enum ProjectArcKind {
@@ -78,6 +78,9 @@ struct ProjectFile {
   places: Vec<ProjectPlace>,
   transitions: Vec<ProjectTransition>,
   notes: Vec<ProjectNote>,
+  /// The DSL tab's text buffer, verbatim (comments and all) — it's the primary authoring
+  /// surface, not a derived view, so it must survive a save/reload like everything else here.
+  dsl_source: String,
 }
 
 fn invalid_data(msg: impl Into<String>) -> io::Error {
@@ -173,6 +176,7 @@ pub fn save(app: &PetriApp, path: &Path) -> io::Result<()> {
     places,
     transitions,
     notes,
+    dsl_source: app.dsl.source.clone(),
   };
   let archived =
     rkyv::to_bytes::<rkyv::rancor::Error>(&file).map_err(|e| io::Error::other(e.to_string()))?;
@@ -193,6 +197,7 @@ pub struct Loaded {
   pub rotation: HashMap<TransitionId, f32>,
   pub colors: HashMap<PlaceId, egui::Color32>,
   pub notes: slotmap::SlotMap<crate::app::NoteId, crate::app::NoteData>,
+  pub dsl_source: String,
   pub next_place_n: usize,
   pub next_transition_n: usize,
 }
@@ -282,6 +287,7 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
     rotation,
     colors,
     notes,
+    dsl_source: file.dsl_source.clone(),
   })
 }
 
@@ -309,6 +315,7 @@ mod tests {
       text: "leyenda".to_string(),
       color: Some(egui::Color32::from_rgb(80, 120, 200)),
     });
+    app.dsl.source = "[lugares]\np1 # comentario\n".to_string();
 
     let dir = std::env::temp_dir();
     let path = dir.join(format!("petricrab-test-{}.gpn", std::process::id()));
@@ -346,6 +353,7 @@ mod tests {
       loaded_note.color,
       Some(egui::Color32::from_rgb(80, 120, 200))
     );
+    assert_eq!(loaded.dsl_source, "[lugares]\np1 # comentario\n");
   }
 
   #[test]
